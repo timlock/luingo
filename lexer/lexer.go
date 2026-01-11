@@ -349,10 +349,30 @@ func NewLexer(input string) *Lexer {
 	return &Lexer{strings.NewReader(input), strings.Builder{}}
 }
 
+func (l *Lexer) skipWithespace() (rune, error) {
+	var (
+		next rune
+		err  error
+	)
+	for {
+		next, _, err = l.input.ReadRune()
+		if err != nil {
+			return 0, fmt.Errorf("reading next rune: %w", err)
+		}
+		if !unicode.IsSpace(next) {
+			break
+		}
+	}
+
+	l.buffer.WriteRune(next)
+
+	return next, nil
+}
+
 func (l *Lexer) readRune() (rune, error) {
 	next, _, err := l.input.ReadRune()
-	if err != nil {
-		return 0, fmt.Errorf("reading next rune: %w", err)
+		if err != nil {
+			return 0, fmt.Errorf("reading next rune: %w", err)
 	}
 
 	l.buffer.WriteRune(next)
@@ -459,7 +479,7 @@ func (l *Lexer) All() ([]Token, error) {
 }
 
 func (l *Lexer) Next() (Token, error) {
-	r, err := l.readRune()
+	r, err := l.skipWithespace()
 	if err != nil {
 		return Token{}, err
 	}
@@ -478,7 +498,7 @@ func (l *Lexer) Next() (Token, error) {
 			return Token{}, fmt.Errorf("reading string: %w", err)
 		}
 
-		return Token{tokenType: String, str: string(r) + raw}, nil
+		return Token{tokenType: String, str: raw}, nil
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		number, _, err := l.readNumber()
 		if err != nil {
@@ -514,29 +534,31 @@ func (l *Lexer) readString() (string, error) {
 		}
 
 		if r == delimiter {
-			return l.takeBuffer(), nil
+			str := strings.TrimPrefix(l.takeBuffer(), string(delimiter))
+			return strings.TrimSuffix(str, string(delimiter)), nil
 		}
 	}
 }
 
 func (l *Lexer) readIdentifier() (string, error) {
 	for {
-		r, err := l.readRune()
+		r, err := l.peekRune()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 
-			return "", fmt.Errorf("reading next rune: %w", err)
+			return "", fmt.Errorf("peeking next rune: %w", err)
 		}
 
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			if err := l.input.UnreadRune(); err != nil {
-				return "", fmt.Errorf("unreading last rune: %w", err)
-			}
-
 			break
 		}
+
+		if _, err = l.readRune(); err != nil {
+			return "", fmt.Errorf("reading next rune: %w", err)
+		}
+
 	}
 
 	return l.takeBuffer(), nil
