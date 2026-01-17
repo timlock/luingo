@@ -10,9 +10,9 @@ import (
 )
 
 type Token struct {
-	tokenType TokenType
-	str       string
-	number    float64
+	Type   TokenType
+	Str    string
+	Number float64
 }
 
 type TokenType int
@@ -78,6 +78,7 @@ const (
 	String
 	Identifier
 	LineComment
+	EOF
 )
 
 func (t TokenType) String() string {
@@ -371,13 +372,18 @@ func (l *Lexer) skipWithespace() (rune, error) {
 
 func (l *Lexer) readRune() (rune, error) {
 	next, _, err := l.input.ReadRune()
-		if err != nil {
-			return 0, fmt.Errorf("reading next rune: %w", err)
+	if err != nil {
+		return 0, fmt.Errorf("reading next rune: %w", err)
 	}
 
 	l.buffer.WriteRune(next)
 
 	return next, nil
+}
+
+func (l *Lexer) unreadRune() {
+	buf := l.takeBuffer()
+	l.buffer.WriteString(buf[0 : len(buf)-1])
 }
 
 func (l *Lexer) peekRune() (rune, error) {
@@ -460,6 +466,31 @@ func (l *Lexer) lastRune() (rune, bool) {
 	return current[len(current)-1], true
 }
 
+func (l *Lexer) readWhile(matchFn func(rune) bool) error {
+	for {
+
+		nextRune, err := l.peekRune()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return fmt.Errorf("peeking next rune: %w", err)
+		}
+
+		if !matchFn(nextRune) {
+			break
+		}
+
+		_, err = l.readRune()
+		if err != nil {
+			return fmt.Errorf("reading next rune: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func (l *Lexer) All() ([]Token, error) {
 	var tokens []Token
 
@@ -488,24 +519,24 @@ func (l *Lexer) Next() (Token, error) {
 
 	switch r {
 	case '+':
-		return Token{tokenType: Plus}, nil
+		return Token{Type: Plus}, nil
 	case '-':
 		// TODO comment
-		return Token{tokenType: Minus}, nil
+		return Token{Type: Minus}, nil
 	case '"', '\'':
 		raw, err := l.readString()
 		if err != nil {
 			return Token{}, fmt.Errorf("reading string: %w", err)
 		}
 
-		return Token{tokenType: String, str: raw}, nil
+		return Token{Type: String, Str: raw}, nil
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		number, _, err := l.readNumber()
 		if err != nil {
 			return Token{}, fmt.Errorf("reading number: %w", err)
 		}
 
-		return Token{tokenType: Number, number: number}, nil
+		return Token{Type: Number, Number: number}, nil
 	}
 
 	identifier, err := l.readIdentifier()
@@ -515,10 +546,24 @@ func (l *Lexer) Next() (Token, error) {
 
 	tokenType, err := FromString(identifier)
 	if err == nil {
-		return Token{tokenType: tokenType}, nil
+		return Token{Type: tokenType}, nil
 	}
 
-	return Token{tokenType: Identifier, str: identifier}, nil
+	return Token{Type: Identifier, Str: identifier}, nil
+}
+
+
+func(l* Lexer) ExpectToken(want TokenType) (Token, error){
+	token, err := l.Next()
+	if err != nil{
+		return Token{}, fmt.Errorf("reading next token: %w", err)
+	}
+
+	if token.Type != want{
+		return Token{}, fmt.Errorf("want %v got %v",want, token.Type)
+	}
+
+	return token, nil
 }
 
 func (l *Lexer) readString() (string, error) {
@@ -527,38 +572,27 @@ func (l *Lexer) readString() (string, error) {
 		panic("should not call readString() without reading a single quote or doulbe quote first")
 	}
 
-	for {
-		r, err := l.readRune()
-		if err != nil {
-			return "", fmt.Errorf("reading next rune: %w", err)
-		}
-
-		if r == delimiter {
-			str := strings.TrimPrefix(l.takeBuffer(), string(delimiter))
-			return strings.TrimSuffix(str, string(delimiter)), nil
-		}
+	err := l.readWhile(func(next rune) bool {
+		return next != delimiter
+	})
+	if err != nil {
+		return "", fmt.Errorf("reading string content: %w", err)
 	}
+
+	if _, err := l.readRune(); err != nil {
+		return "", fmt.Errorf("reading string closing quote: %w", err)
+	}
+
+	str := strings.TrimPrefix(l.takeBuffer(), string(delimiter))
+	return strings.TrimSuffix(str, string(delimiter)), nil
 }
 
 func (l *Lexer) readIdentifier() (string, error) {
-	for {
-		r, err := l.peekRune()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			return "", fmt.Errorf("peeking next rune: %w", err)
-		}
-
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			break
-		}
-
-		if _, err = l.readRune(); err != nil {
-			return "", fmt.Errorf("reading next rune: %w", err)
-		}
-
+	err := l.readWhile(func(next rune) bool {
+		return unicode.IsDigit(next) || unicode.IsLetter(next)
+	})
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
 	}
 
 	return l.takeBuffer(), nil
@@ -569,69 +603,87 @@ func (l *Lexer) ReadRunes() int {
 }
 
 func (l *Lexer) readNumber() (float64, string, error) {
-	firstPeek, err := l.peekRune()
-	if err != nil {
-		return 0, "", fmt.Errorf("peeking next rune: %w", err)
+	lastRead, ok := l.lastRune()
+	if !ok {
+		panic("should not call readNumber() without reading a digit first")
 	}
 
-	secondPeek, err := l.peekRune()
-	if err != nil {
-		return 0, "", fmt.Errorf("peeking next rune: %w", err)
-	}
-
-	if firstPeek == '0' && (secondPeek == 'x' || secondPeek == 'X') {
-		// the 0x part of a hex number cant be parsed by strconv
-		_, err := l.input.Seek(2, io.SeekCurrent)
+	err := func() error {
+		peeked, err := l.peekRune()
 		if err != nil {
-			return 0, "", fmt.Errorf("skipping next two runes: %w", err)
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("peeking next rune: %w", err)
 		}
 
-		for {
-			next, err := l.readRune()
+		if lastRead == '0' && (peeked == 'x' || peeked == 'X') {
+			// the 0x part of a hex number cant be parsed by strconv
+			_, err := l.input.Seek(2, io.SeekCurrent)
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				return fmt.Errorf("skipping next two runes: %w", err)
+			}
+
+			for {
+				peeked, err := l.peekRune()
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					}
+
+					return fmt.Errorf("peeking next rune: %w", err)
+				}
+
+				if !unicode.IsDigit(peeked) &&
+					peeked != '.' &&
+					!unicode.In(peeked, unicode.ASCII_Hex_Digit) &&
+					peeked != 'p' && peeked != 'P' {
+
 					break
 				}
 
-				return 0, "", fmt.Errorf("reading next rune: %w", err)
-			}
-
-			if !unicode.IsDigit(next) && next != '.' && !unicode.IsLetter(next) {
-				if err := l.input.UnreadRune(); err != nil {
-					return 0, "", fmt.Errorf("unreading last rune: %w", err)
+				if _, err = l.readRune(); err != nil {
+					return fmt.Errorf("reading next rune: %w", err)
 				}
 
-				break
+				if peeked == 'p' || peeked == 'P' {
+					if _, err = l.readRune(); err != nil {
+						return fmt.Errorf("reading next rune: %w", err)
+					}
+				}
 			}
 
-			if next == 'e' || next == 'E' || next == 'a' || next == 'A' {
-				if nextPeek, err := l.peekRune(); err == nil && (nextPeek == '+' || nextPeek == '-') {
+		} else if unicode.IsDigit(peeked) {
+			for {
+				peeked, err := l.peekRune()
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					}
+
+					return fmt.Errorf("peeking next rune: %w", err)
+				}
+
+				if !unicode.IsDigit(peeked) && peeked != '.' && peeked != 'e' && peeked != 'E' {
+					break
+				}
+
+				if _, err = l.readRune(); err != nil {
+					return fmt.Errorf("reading next rune: %w", err)
+				}
+
+				if peeked == 'e' || peeked == 'P' {
 					if _, err = l.readRune(); err != nil {
-						return 0, "", fmt.Errorf("reading next rune: %w", err)
+						return fmt.Errorf("reading next rune: %w", err)
 					}
 				}
 			}
 		}
 
-	} else {
-		for {
-			next, err := l.readRune()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-
-				return 0, "", fmt.Errorf("reading next rune: %w", err)
-			}
-
-			if !unicode.IsDigit(next) && next != '.' {
-				if err := l.input.UnreadRune(); err != nil {
-					return 0, "", fmt.Errorf("unreading last rune: %w", err)
-				}
-
-				break
-			}
-		}
+		return nil
+	}()
+	if err != nil {
+		return 0, "", err
 	}
 
 	raw := l.takeBuffer()

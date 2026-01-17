@@ -17,8 +17,38 @@ func Test(t *testing.T) {
 			desc:  "hello world",
 			input: "print \"hello world\"",
 			want: []Token{
-				{tokenType: Identifier, str: "print"},
-				{tokenType: String, str: "hello world"},
+				{Type: Identifier, Str: "print"},
+				{Type: String, Str: "hello world"},
+			},
+			wantErr: assert.NoError,
+		},
+		{
+			desc:  "1+1",
+			input: "1+1",
+			want: []Token{
+				{Type: Number, Number: 1},
+				{Type: Plus},
+				{Type: Number, Number: 1},
+			},
+			wantErr: assert.NoError,
+		},
+		{
+			desc:  "1 + 1",
+			input: "1 + 1",
+			want: []Token{
+				{Type: Number, Number: 1},
+				{Type: Plus},
+				{Type: Number, Number: 1},
+			},
+			wantErr: assert.NoError,
+		},
+		{
+			desc:  "1 - 1",
+			input: "1 \n-\n 1",
+			want: []Token{
+				{Type: Number, Number: 1},
+				{Type: Minus},
+				{Type: Number, Number: 1},
 			},
 			wantErr: assert.NoError,
 		},
