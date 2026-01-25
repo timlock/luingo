@@ -10,9 +10,10 @@ import (
 )
 
 type Token struct {
-	Type   TokenType
-	Str    string
-	Number float64
+	Type    TokenType
+	Str     string
+	Float   float64
+	Integer int64
 }
 
 type TokenType int
@@ -74,7 +75,8 @@ const (
 	Dot
 	DoubleDot
 	TrippleDot
-	Number
+	Float
+	Integer
 	String
 	Identifier
 	LineComment
@@ -195,8 +197,6 @@ func (t TokenType) String() string {
 		return ".."
 	case TrippleDot:
 		return "..."
-	case Number:
-		return "number"
 	case String:
 		return "string"
 	case Identifier:
@@ -399,6 +399,23 @@ func (l *Lexer) peekRune() (rune, error) {
 	return next, nil
 }
 
+func (l *Lexer) readIf(want rune) (bool, error) {
+	got, err := l.peekRune()
+	if err != nil {
+		return false, err
+	}
+
+	if got != want {
+		return false, nil
+	}
+
+	if _, err := l.readRune(); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (l *Lexer) skipRune() error {
 	_, err := l.input.Seek(1, io.SeekCurrent)
 	if err != nil {
@@ -523,6 +540,113 @@ func (l *Lexer) Next() (Token, error) {
 	case '-':
 		// TODO comment
 		return Token{Type: Minus}, nil
+	case '*':
+		return Token{Type: Asterisk}, nil
+	case '/':
+		ok, err := l.readIf('/')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: EscpaedSlash}, nil
+		}
+		return Token{Type: Slash}, nil
+	case '%':
+		return Token{Type: Ampersand}, nil
+	case '^':
+		return Token{Type: Cirumflex}, nil
+	case '#':
+		return Token{Type: Hashtag}, nil
+
+	case '&':
+		return Token{Type: Ampersand}, nil
+	case '|':
+		return Token{Type: Pipe}, nil
+
+	case '=':
+		ok, err := l.readIf('=')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: Equal}, nil
+		}
+		return Token{Type: Assign}, nil
+
+	case '~':
+		ok, err := l.readIf('=')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: NotEqual}, nil
+		}
+		return Token{Type: Tilde}, nil
+
+	case '<':
+		ok, err := l.readIf('=')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: SmallerThan}, nil
+		}
+		return Token{Type: Smaller}, nil
+	case '>':
+		ok, err := l.readIf('=')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: GreaterThan}, nil
+		}
+		return Token{Type: Greater}, nil
+	case '(':
+		return Token{Type: OpenBracket}, nil
+	case ')':
+		return Token{Type: ClosedBracket}, nil
+	case '{':
+		return Token{Type: OpenBrace}, nil
+	case '}':
+		return Token{Type: ClosedBrace}, nil
+	case '[':
+		return Token{Type: OpenSquareBracket}, nil
+	case ']':
+		return Token{Type: ClosedSquareBracket}, nil
+
+	case ':':
+		ok, err := l.readIf(':')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if ok {
+			return Token{Type: DoubleColon}, nil
+		}
+		return Token{Type: Colon}, nil
+
+	case ';':
+		return Token{Type: SemiColon}, nil
+	case ',':
+		return Token{Type: Comma}, nil
+	case '.':
+		ok, err := l.readIf('.')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if !ok {
+			return Token{Type: Dot}, nil
+		}
+
+		ok, err = l.readIf('.')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return Token{}, err
+		}
+		if !ok {
+			return Token{Type: DoubleDot}, nil
+		}
+
+		return Token{Type: TrippleDot}, nil
+
 	case '"', '\'':
 		raw, err := l.readString()
 		if err != nil {
@@ -531,12 +655,12 @@ func (l *Lexer) Next() (Token, error) {
 
 		return Token{Type: String, Str: raw}, nil
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		number, _, err := l.readNumber()
+		token, err := l.readNumber()
 		if err != nil {
 			return Token{}, fmt.Errorf("reading number: %w", err)
 		}
 
-		return Token{Type: Number, Number: number}, nil
+		return token, nil
 	}
 
 	identifier, err := l.readIdentifier()
@@ -552,15 +676,14 @@ func (l *Lexer) Next() (Token, error) {
 	return Token{Type: Identifier, Str: identifier}, nil
 }
 
-
-func(l* Lexer) ExpectToken(want TokenType) (Token, error){
+func (l *Lexer) ExpectToken(want TokenType) (Token, error) {
 	token, err := l.Next()
-	if err != nil{
+	if err != nil {
 		return Token{}, fmt.Errorf("reading next token: %w", err)
 	}
 
-	if token.Type != want{
-		return Token{}, fmt.Errorf("want %v got %v",want, token.Type)
+	if token.Type != want {
+		return Token{}, fmt.Errorf("want %v got %v", want, token.Type)
 	}
 
 	return token, nil
@@ -602,26 +725,27 @@ func (l *Lexer) ReadRunes() int {
 	return int(l.input.Size()) - l.input.Len()
 }
 
-func (l *Lexer) readNumber() (float64, string, error) {
+func (l *Lexer) readNumber() (Token, error) {
 	lastRead, ok := l.lastRune()
 	if !ok {
 		panic("should not call readNumber() without reading a digit first")
 	}
 
-	err := func() error {
+	isFloat, err := func() (bool, error) {
+		isFloat := false
 		peeked, err := l.peekRune()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				return false, nil
 			}
-			return fmt.Errorf("peeking next rune: %w", err)
+			return false, fmt.Errorf("peeking next rune: %w", err)
 		}
 
 		if lastRead == '0' && (peeked == 'x' || peeked == 'X') {
 			// the 0x part of a hex number cant be parsed by strconv
 			_, err := l.input.Seek(2, io.SeekCurrent)
 			if err != nil {
-				return fmt.Errorf("skipping next two runes: %w", err)
+				return false, fmt.Errorf("skipping next two runes: %w", err)
 			}
 
 			for {
@@ -631,7 +755,7 @@ func (l *Lexer) readNumber() (float64, string, error) {
 						break
 					}
 
-					return fmt.Errorf("peeking next rune: %w", err)
+					return false, fmt.Errorf("peeking next rune: %w", err)
 				}
 
 				if !unicode.IsDigit(peeked) &&
@@ -642,13 +766,17 @@ func (l *Lexer) readNumber() (float64, string, error) {
 					break
 				}
 
+				if peeked == '.' || peeked == 'p' || peeked == 'P' {
+					isFloat = true
+				}
+
 				if _, err = l.readRune(); err != nil {
-					return fmt.Errorf("reading next rune: %w", err)
+					return false, fmt.Errorf("reading next rune: %w", err)
 				}
 
 				if peeked == 'p' || peeked == 'P' {
 					if _, err = l.readRune(); err != nil {
-						return fmt.Errorf("reading next rune: %w", err)
+						return false, fmt.Errorf("reading next rune: %w", err)
 					}
 				}
 			}
@@ -661,36 +789,50 @@ func (l *Lexer) readNumber() (float64, string, error) {
 						break
 					}
 
-					return fmt.Errorf("peeking next rune: %w", err)
+					return false, fmt.Errorf("peeking next rune: %w", err)
 				}
 
 				if !unicode.IsDigit(peeked) && peeked != '.' && peeked != 'e' && peeked != 'E' {
 					break
 				}
 
-				if _, err = l.readRune(); err != nil {
-					return fmt.Errorf("reading next rune: %w", err)
+				if peeked == '.' || peeked == 'e' || peeked == 'E' {
+					isFloat = true
 				}
 
-				if peeked == 'e' || peeked == 'P' {
+				if _, err = l.readRune(); err != nil {
+					return false, fmt.Errorf("reading next rune: %w", err)
+				}
+
+				if peeked == 'e' || peeked == 'E' {
 					if _, err = l.readRune(); err != nil {
-						return fmt.Errorf("reading next rune: %w", err)
+						return false, fmt.Errorf("reading next rune: %w", err)
 					}
 				}
 			}
 		}
 
-		return nil
+		return isFloat, nil
 	}()
 	if err != nil {
-		return 0, "", err
+		return Token{}, err
 	}
 
 	raw := l.takeBuffer()
-	number, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, "", fmt.Errorf("parsing number from %v: %w", raw, err)
+	if isFloat {
+		number, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return Token{}, fmt.Errorf("parsing float64 from %v: %w", raw, err)
+		}
+
+		return Token{Type: Float, Float: number}, nil
 	}
 
-	return number, raw, nil
+	number, err := strconv.ParseInt(raw, 10, 64) //TODO different base?
+	if err != nil {
+		return Token{}, fmt.Errorf("parsing int64 from %v: %w", raw, err)
+	}
+
+	return Token{Type: Integer, Integer: number}, nil
+
 }
