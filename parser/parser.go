@@ -12,18 +12,20 @@ type Parser struct {
 	lexer            lexer.Lexer
 	constants        []vm.Value
 	byteCodes        []vm.ByteCode
-	stringConstants  map[string]struct{}
-	integerConstants map[int64]struct{}
-	floatConstants   map[float64]struct{}
+	stringConstants  map[string]byte
+	integerConstants map[int64]byte
+	floatConstants   map[float64]byte
 	locals           []string
+	localsIndex      map[string]byte
 }
 
 func NewParser(input string) *Parser {
 	return &Parser{
 		lexer:            *lexer.NewLexer(input),
-		stringConstants:  map[string]struct{}{},
-		integerConstants: map[int64]struct{}{},
-		floatConstants:   map[float64]struct{}{},
+		stringConstants:  map[string]byte{},
+		integerConstants: map[int64]byte{},
+		floatConstants:   map[float64]byte{},
+		localsIndex:      map[string]byte{},
 	}
 }
 
@@ -40,8 +42,8 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 
 		switch token.Type {
 		case lexer.Identifier:
-			p.loadString(token.Str)
-			p.byteCodes = append(p.byteCodes, vm.GetGlobal(0, byte(len(p.byteCodes) -1)))
+			funcPos := byte(len(p.locals))
+			p.loadVar(funcPos, token.Str)
 
 			next, err := p.lexer.Next()
 			if err != nil {
@@ -50,11 +52,11 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 
 			switch next.Type {
 			case lexer.String:
-				p.loadString(next.Str)
-				p.byteCodes = append(p.byteCodes, vm.Call(0, 1))
+
+				p.byteCodes = append(p.byteCodes, vm.LoadConst(funcPos+1, p.addStringConstant(next.Str)))
 
 			case lexer.OpenBracket:
-				if err := p.loadExpression(); err != nil {
+				if err := p.loadExpression(funcPos + 1); err != nil {
 					return nil, nil, fmt.Errorf("loading expression in function call: %w", err)
 				}
 
@@ -62,25 +64,33 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 				if err != nil {
 					return nil, nil, err
 				}
-
-				p.byteCodes = append(p.byteCodes, vm.Call(0, 1))
-
-			case lexer.Local:
-				next, err = p.lexer.ExpectToken(lexer.Assign)
-				if err != nil {
-					return nil, nil, err
-				}
-
-				if err := p.loadExpression(); err != nil {
-					return nil, nil, fmt.Errorf("loading expression assigned to local %v: %w", next.Str, err)
-				}
-
-				p.locals = append(p.locals, next.Str)
-
 			default:
-				return nil, nil, fmt.Errorf("did not expect token %v' after identifier", next.Type.String())
+				return nil, nil, fmt.Errorf("%v did not expect token '%v'", p.lexer.Cursor(), next.Type.String())
 			}
 
+			p.byteCodes = append(p.byteCodes, vm.Call(funcPos, 1))
+
+		case lexer.Local:
+			next, err := p.lexer.ExpectToken(lexer.Identifier)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			if _, err = p.lexer.ExpectToken(lexer.Assign); err != nil {
+				return nil, nil, err
+			}
+
+			if err := p.loadExpression(byte(len(p.locals))); err != nil {
+				return nil, nil, fmt.Errorf("loading expression assigned to local %v: %w", next.Str, err)
+			}
+
+			p.locals = append(p.locals, next.Str)
+			p.localsIndex[next.Str] = byte(len(p.locals) - 1)
+
+		case lexer.LineComment:
+			// ignore comment
+		default:
+			return nil, nil, fmt.Errorf("%v did not expect token '%v'", p.lexer.Cursor(), token.Type.String())
 		}
 	}
 
@@ -90,40 +100,34 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 	return constants, byteCodes, nil
 }
 
-func (p *Parser) loadExpression() error {
+func (p *Parser) loadExpression(destination byte) error {
 	token, err := p.lexer.Next()
 	if err != nil {
 		return fmt.Errorf("reading function parameter: %w", err)
 	}
 	switch token.Type {
 	case lexer.Nil:
-		p.byteCodes = append(p.byteCodes, vm.LoadNil(1))
+		p.byteCodes = append(p.byteCodes, vm.LoadNil(destination))
 	case lexer.True:
-		p.byteCodes = append(p.byteCodes, vm.LoadBool(1, true))
+		p.byteCodes = append(p.byteCodes, vm.LoadBool(destination, true))
 	case lexer.False:
-		p.byteCodes = append(p.byteCodes, vm.LoadBool(1, false))
+		p.byteCodes = append(p.byteCodes, vm.LoadBool(destination, false))
 	case lexer.Integer:
-		if token.Integer >= 0 && token.Integer <= 65535 {
-			byteCode, err := vm.LoadUInt(1, uint16(token.Integer))
-			if err != nil {
-				return err
-			}
-			p.byteCodes = append(p.byteCodes, byteCode)
-		} else if token.Integer >= -32768 && token.Integer <= 32767 {
-			byteCode, err := vm.LoadInt(1, int16(token.Integer))
+		if token.Integer >= -32768 && token.Integer <= 32767 {
+			byteCode, err := vm.LoadInt(destination, int16(token.Integer))
 			if err != nil {
 				return err
 			}
 			p.byteCodes = append(p.byteCodes, byteCode)
 		} else {
-			p.loadInteger(token.Integer)
+			p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addIntegerConstant(token.Integer)))
 		}
 	case lexer.Float:
-		p.loadFloat(token.Float)
+		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addFloatConstant(token.Float)))
 	case lexer.String:
-		p.loadString(token.Str)
+		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addStringConstant(token.Str)))
 	case lexer.Identifier:
-		//TODO
+		p.loadVar(destination, token.Str)
 	default:
 		return fmt.Errorf("did not expect token %v' as expression", token.Type.String())
 	}
@@ -131,31 +135,45 @@ func (p *Parser) loadExpression() error {
 	return nil
 }
 
-func (p *Parser) loadString(value string) {
-	if _, ok := p.stringConstants[value]; !ok {
-		p.stringConstants[value] = struct{}{}
-
-		p.loadConst(vm.NewString(value))
+func (p *Parser) addStringConstant(value string) byte {
+	pos, ok := p.stringConstants[value]
+	if !ok {
+		p.constants = append(p.constants, vm.NewString(value))
+		pos = byte(len(p.constants) - 1)
+		p.stringConstants[value] = pos
 	}
+
+	return pos
 }
 
-func (p *Parser) loadInteger(value int64) {
-	if _, ok := p.integerConstants[value]; !ok {
-		p.integerConstants[value] = struct{}{}
-
-		p.loadConst(vm.NewInteger(value))
+func (p *Parser) addIntegerConstant(value int64) byte {
+	pos, ok := p.integerConstants[value]
+	if !ok {
+		p.constants = append(p.constants, vm.NewInteger(value))
+		pos = byte(len(p.constants) - 1)
+		p.integerConstants[value] = pos
 	}
+
+	return pos
+
 }
 
-func (p *Parser) loadFloat(value float64) {
-	if _, ok := p.floatConstants[value]; !ok {
-		p.floatConstants[value] = struct{}{}
-
-		p.loadConst(vm.NewFloat(value))
+func (p *Parser) addFloatConstant(value float64) byte {
+	pos, ok := p.floatConstants[value]
+	if !ok {
+		p.constants = append(p.constants, vm.NewFloat(value))
+		pos = byte(len(p.constants) - 1)
+		p.floatConstants[value] = pos
 	}
+
+	return pos
 }
 
-func (p *Parser) loadConst(value vm.Value) {
-	p.constants = append(p.constants, value)
-	p.byteCodes = append(p.byteCodes, vm.LoadConst(1, byte(len(p.constants)-1)))
+func (p *Parser) loadVar(destination byte, identifier string) {
+	if pos, ok := p.localsIndex[identifier]; ok {
+		p.byteCodes = append(p.byteCodes, vm.Move(destination, pos))
+		return
+	}
+
+	p.byteCodes = append(p.byteCodes, vm.GetGlobal(destination, p.addStringConstant(identifier)))
 }

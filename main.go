@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"luingo/parser"
-	"luingo/vm"
+	"luingo/interpreter"
 	"os"
+	"time"
 )
 
 func main() {
@@ -18,28 +18,13 @@ func main() {
 		return
 	}
 
-	parser := parser.NewParser(string(bytes))
-
-	constants, byteCodes, err := parser.Parse()
-	if err != nil {
-		fmt.Printf("parsing content: %v \n", err)
-		return
+	interpreter := interpreter.NewInterpreter(string(bytes))
+	
+	start := time.Now()
+	if err := interpreter.Execute(); err != nil {
+		fmt.Printf("Error: %v\n", err)	
 	}
 
-	for _, constant := range constants {
-		fmt.Printf("constant: %+v\n", constant)
-	}
-	for _, byteCode := range byteCodes{
-		fmt.Printf("byte code: %v\n", byteCode)
-	}
-
-	globals := map[string]vm.Value{
-		"print": vm.NewFuntion(vm.Print),
-	}
-	virtualMachine := vm.NewVM(globals)
-
-	err = virtualMachine.Execute(constants, byteCodes)
-	if err != nil {
-		fmt.Printf("Executing byte code: %v\n", err)
-	}
+	fmt.Printf("Execution took %v", time.Since(start))
+	
 }

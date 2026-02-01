@@ -3,6 +3,7 @@ package vm
 import (
 	"encoding/binary"
 	"fmt"
+	"reflect"
 )
 
 type vmFunc func(*VM) int
@@ -16,6 +17,7 @@ const (
 	loadNil
 	loadBool
 	loadInt
+	move
 )
 
 func (o OpCode) String() string {
@@ -32,6 +34,8 @@ func (o OpCode) String() string {
 		return "LoadInt"
 	case loadNil:
 		return "LoadNil"
+	case move:
+		return "Move"
 	default:
 		panic(fmt.Sprintf("unexpected vm.OpCode: %#v", o))
 	}
@@ -80,18 +84,24 @@ func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
 	return ByteCode{loadInt, bytes}, nil
 }
 
-func LoadUInt(stackIndex byte, value uint16) (ByteCode, error) {
-	bytes := [3]byte{stackIndex, 0, 0}
-	if _, err := binary.Encode(bytes[1:], binary.BigEndian, value); err != nil {
-		return ByteCode{}, fmt.Errorf("converting uint16 %v to 2 bytes: %w", value, err)
-	}
+func Move(stackIndex, localsIndex byte) ByteCode {
+	bytes := [3]byte{stackIndex, localsIndex, 0}
 
-	return ByteCode{loadInt, bytes}, nil
+	return ByteCode{move, bytes}
 }
 
 type Value struct {
 	Type  Type
 	Inner any
+}
+
+func (v Value) String() string {
+	switch v.Type {
+	case FunctionType:
+		return "function"
+	default:
+		return fmt.Sprint(v.Inner)
+	}
 }
 
 type Type int
@@ -102,6 +112,7 @@ const (
 	IntegerType
 	FunctionType
 	BooleanType
+	NilType
 )
 
 func (t Type) String() string {
@@ -116,9 +127,15 @@ func (t Type) String() string {
 		return "Boolean"
 	case FunctionType:
 		return "Function"
+	case NilType:
+		return "Nil"
 	default:
 		panic(fmt.Sprintf("unexpected vm.Type: %#v", t))
 	}
+}
+
+func NewNil() Value {
+	return Value{NilType, nil}
 }
 
 func NewString(value string) Value {
@@ -142,8 +159,9 @@ func NewBoolean(value bool) Value {
 }
 
 type VM struct {
-	globals map[string]Value
-	stack   []Value
+	globals   map[string]Value
+	stack     []Value
+	funcIndex int
 }
 
 func NewVM(globals map[string]Value) *VM {
@@ -155,19 +173,24 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 		switch byteCode.opCode {
 		case call:
 			stackIndex := byteCode.args[0]
+			v.funcIndex = int(stackIndex)
+
 			stackItem := v.stack[stackIndex]
 			if stackItem.Type != FunctionType {
 				return fmt.Errorf("expected %v. stack item to be a function but it is of type %v", stackIndex, stackItem.Type)
 			}
 
-			function := stackItem.Inner.(vmFunc)
+			function, ok := stackItem.Inner.(vmFunc)
+			if !ok {
+				panic(fmt.Sprintf("Value type is %v but inner is %v", stackItem.Type, reflect.TypeOf(function)))
+			}
 			_ = function(v)
 
 		case getGloal:
 			globalIndex := byteCode.args[1]
 			constant := constants[globalIndex]
 			if constant.Type != StringType {
-				return fmt.Errorf("expected %v. constant to be a global but constant is of type %v", globalIndex, constant.Type)
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
 			}
 
 			globalName := constant.Inner.(string)
@@ -185,8 +208,31 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 
 			v.setStack(int(stackIndex), constants[constIndex])
 
+		case loadNil:
+			stackIndex := byteCode.args[0]
+			v.setStack(int(stackIndex), NewNil())
+
+		case loadBool:
+			stackIndex := byteCode.args[0]
+			isTrue := byteCode.args[1] == 1
+			v.setStack(int(stackIndex), NewBoolean(isTrue))
+
+		case loadInt:
+			stackIndex := byteCode.args[0]
+
+			var integer int16
+			_, err := binary.Decode(byteCode.args[1:], binary.BigEndian, &integer)
+			if err != nil {
+				return fmt.Errorf("decoding integer from ByteCode %+v : %w", byteCode, err)
+			}
+
+			v.setStack(int(stackIndex), NewInteger(int64(integer)))
+		case move:
+			destinationIndex := byteCode.args[0]
+			sourceIndex := byteCode.args[1]
+			v.setStack(int(destinationIndex), v.stack[sourceIndex])
 		default:
-			panic(fmt.Sprintf("unexpected vm.OpCode: %v", byteCode.opCode))
+			return fmt.Errorf("unexpected vm.OpCode: %v", byteCode.opCode)
 		}
 	}
 
@@ -202,7 +248,7 @@ func (v *VM) setStack(index int, value Value) {
 }
 
 func Print(vm *VM) int {
-	stackItem := vm.stack[1]
-	fmt.Printf("%v\n", stackItem.Inner)
+	stackItem := vm.stack[vm.funcIndex+1]
+	fmt.Printf("%v\n", stackItem)
 	return 0
 }
