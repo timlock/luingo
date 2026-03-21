@@ -11,21 +11,30 @@ type vmFunc func(*VM) int
 type OpCode byte
 
 const (
-	getGloal OpCode = iota
+	getGlobal OpCode = iota
+	setGlobal
+	setGlobalConst
+	setGlobalGlobal
 	loadConst
 	call
 	loadNil
 	loadBool
 	loadInt
 	move
-)
+	)
 
 func (o OpCode) String() string {
 	switch o {
 	case call:
 		return "Call"
-	case getGloal:
+	case getGlobal:
 		return "GetGlobal"
+	case setGlobal:
+		return "SetGlobal"
+	case setGlobalConst:
+		return "SetGlobalConst"
+	case setGlobalGlobal:
+		return "SetGlobalGlobal"
 	case loadBool:
 		return "LoadBool"
 	case loadConst:
@@ -51,7 +60,7 @@ func (b ByteCode) String() string {
 }
 
 func GetGlobal(stackIndex, globalIndex byte) ByteCode {
-	return ByteCode{getGloal, [3]byte{stackIndex, globalIndex, 0}}
+	return ByteCode{getGlobal, [3]byte{stackIndex, globalIndex, 0}}
 }
 
 func LoadConst(stackIndex, constIndex byte) ByteCode {
@@ -88,6 +97,24 @@ func Move(stackIndex, localsIndex byte) ByteCode {
 	bytes := [3]byte{stackIndex, localsIndex, 0}
 
 	return ByteCode{move, bytes}
+}
+
+func SetGlobalConst(globalIndex, constIndex byte) ByteCode {
+	bytes := [3]byte{globalIndex, constIndex, 0}
+
+	return ByteCode{setGlobalConst, bytes}
+}
+
+func SetGlobal(globalIndex, stackIndex byte) ByteCode {
+	bytes := [3]byte{globalIndex, stackIndex, 0}
+
+	return ByteCode{setGlobal, bytes}
+}
+
+func SetGlobalGlobal(globalIndex, constIndex byte) ByteCode {
+	bytes := [3]byte{globalIndex, constIndex, 0}
+
+	return ByteCode{setGlobalGlobal, bytes}
 }
 
 type Value struct {
@@ -186,7 +213,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			}
 			_ = function(v)
 
-		case getGloal:
+		case getGlobal:
 			globalIndex := byteCode.args[1]
 			constant := constants[globalIndex]
 			if constant.Type != StringType {
@@ -196,12 +223,51 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			globalName := constant.Inner.(string)
 			global, ok := v.globals[globalName]
 			if !ok {
-				return fmt.Errorf("global '%v' does not exist", globalName)
+				global = NewNil()
 			}
 
 			stackIndex := byteCode.args[0]
 
 			v.setStack(int(stackIndex), global)
+
+		case setGlobal:
+			globalIndex := byteCode.args[0]
+			constant := constants[globalIndex]
+			if constant.Type != StringType {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			}
+
+			stackIndex := byteCode.args[1]
+			v.globals[constant.String()] = v.stack[stackIndex]
+
+		case setGlobalGlobal:
+			globalIndex := byteCode.args[0]
+			constant := constants[globalIndex]
+			if constant.Type != StringType {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			}
+
+			rhGlobalIndex := byteCode.args[1]
+			rhConstant := constants[rhGlobalIndex]
+			if rhConstant.Type != StringType {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, rhConstant.Type)
+			}
+			rhGlobal, ok := v.globals[rhConstant.String()]
+			if !ok{
+				rhGlobal = NewNil()
+			}
+			v.globals[constant.String()] = rhGlobal
+
+		case setGlobalConst:
+			globalIndex := byteCode.args[0]
+			constant := constants[globalIndex]
+			if constant.Type != StringType {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			}
+
+			constIndex := byteCode.args[1]
+			v.globals[constant.String()] = constants[constIndex]
+
 		case loadConst:
 			stackIndex := byteCode.args[0]
 			constIndex := byteCode.args[1]

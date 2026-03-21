@@ -17,7 +17,7 @@ func TestPrint(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestLocalAssignment(t *testing.T) {
+func TestLocal(t *testing.T) {
 	input, err := os.ReadFile(path.Join("testdata", "locals.lua"))
 	require.NoError(t, err)
 
@@ -25,3 +25,13 @@ func TestLocalAssignment(t *testing.T) {
 	err = interpreter.Execute()
 	assert.NoError(t, err)
 }
+
+func TestAssignment(t *testing.T) {
+	input, err := os.ReadFile(path.Join("testdata", "assign.lua"))
+	require.NoError(t, err)
+
+	interpreter := NewInterpreter(string(input))
+	err = interpreter.Execute()
+	assert.NoError(t, err)
+}
+

@@ -80,7 +80,6 @@ const (
 	String
 	Identifier
 	LineComment
-	EOF
 )
 
 func (t TokenType) String() string {
@@ -203,9 +202,12 @@ func (t TokenType) String() string {
 		return "identifier"
 	case LineComment:
 		return "LineComment"
+	case Integer:
+		return "integer"
+	case Float:
+		return "float"
 	default:
-		return "unknown token"
-		// return fmt.Sprintf("unknown token '%v'", t)
+		panic(fmt.Sprintf("unexpected lexer.TokenType: %#v", t))
 	}
 }
 
@@ -338,10 +340,16 @@ func NewError(inner error, cursor Cursor) *Error {
 }
 
 func (l *Error) Error() string {
+	if l == nil{
+		return "<nil>"
+	}
 	return fmt.Sprintf("%+v %v", l.cursor, l.inner)
 }
 
 func (e *Error) Unwrap() error {
+	if(e == nil){
+		return nil
+	}
 	return e.inner
 }
 
@@ -398,121 +406,18 @@ func (r *reader) Len() int {
 type Lexer struct {
 	input  reader
 	buffer strings.Builder
+	peeked *Token
 }
 
 func NewLexer(input string) *Lexer {
-	return &Lexer{*NewDiagnosticReader(input), strings.Builder{}}
+	return &Lexer{*NewDiagnosticReader(input), strings.Builder{}, nil}
 }
 
 func (l *Lexer) Cursor() Cursor {
 	return l.input.Cursor
 }
 
-func (l *Lexer) skipWithespace() (rune, bool) {
-	var (
-		next rune
-		ok   bool
-	)
-	for {
-		next, ok = l.input.TakeRune()
-		if !ok {
-			return 0, false
-		}
-
-		if !unicode.IsSpace(next) {
-			break
-		}
-	}
-
-	l.buffer.WriteRune(next)
-
-	return next, true
-}
-
-func (l *Lexer) readRune() (rune, bool) {
-	next, ok := l.input.TakeRune()
-	if !ok {
-		return 0, false
-	}
-
-	l.buffer.WriteRune(next)
-
-	return next, true
-}
-
-func (l *Lexer) readIf(want rune) bool {
-	got, ok := l.input.PeekRune()
-	if !ok {
-		return false
-	}
-
-	if got != want {
-		return false
-	}
-	_, ok = l.readRune()
-	return ok
-}
-
-func (l *Lexer) takeBuffer() string {
-	buffer := l.buffer.String()
-	l.buffer.Reset()
-	return buffer
-}
-
-func (l *Lexer) readLine() string {
-	for {
-		peek, ok := l.input.PeekRune()
-		if !ok {
-			return l.takeBuffer()
-		}
-
-		if peek == '\r' || peek == '\n' {
-
-			l.input.SkipRunes(1)
-			break
-		}
-
-		l.readRune()
-	}
-
-	peek, ok := l.input.PeekRune()
-	if !ok {
-		return l.takeBuffer()
-	}
-
-	if peek == '\r' || peek == '\n' {
-
-		l.input.SkipRunes(1)
-	}
-
-	return l.takeBuffer()
-}
-
-func (l *Lexer) lastRune() (rune, bool) {
-	if l.buffer.Len() == 0 {
-		return 0, false
-	}
-
-	current := []rune(l.buffer.String())
-	return current[len(current)-1], true
-}
-
-func (l *Lexer) readWhile(matchFn func(rune) bool) {
-	for {
-		nextRune, ok := l.input.PeekRune()
-		if !ok {
-			return
-		}
-
-		if !matchFn(nextRune) {
-			return
-		}
-
-		_, ok = l.readRune()
-	}
-}
-
-func (l *Lexer) All() ([]Token, *Error) {
+func (l *Lexer) All() ([]Token, error) {
 	var tokens []Token
 
 	for {
@@ -530,7 +435,31 @@ func (l *Lexer) All() ([]Token, *Error) {
 	return tokens, nil
 }
 
-func (l *Lexer) Next() (Token, *Error) {
+func (l *Lexer) Next() (Token, error) {
+	if l.peeked != nil {
+		token := l.peeked
+		l.peeked = nil
+		return *token, nil
+	}
+
+	return l.next()
+}
+
+func (l *Lexer) Peek() (Token, error) {
+	if l.peeked != nil {
+		return *l.peeked, nil
+	}
+
+	token, err := l.next()
+	if err != nil{
+		return Token{}, err
+	}
+	l.peeked = &token
+
+	return token, nil
+}
+
+func (l *Lexer) next() (Token, error) {
 	r, ok := l.skipWithespace()
 	if !ok {
 		return Token{}, NewError(io.EOF, l.Cursor())
@@ -547,7 +476,7 @@ func (l *Lexer) Next() (Token, *Error) {
 			comment := l.readLine()
 			return Token{Type: LineComment, Str: comment}, nil
 		}
-		return Token{Type: Tilde}, nil
+		return Token{Type: Minus}, nil
 	case '*':
 		return Token{Type: Asterisk}, nil
 	case '/':
@@ -656,7 +585,7 @@ func (l *Lexer) Next() (Token, *Error) {
 	return Token{Type: Identifier, Str: identifier}, nil
 }
 
-func (l *Lexer) ExpectToken(want TokenType) (Token, *Error) {
+func (l *Lexer) ExpectToken(want TokenType) (Token, error) {
 	token, err := l.Next()
 	if err != nil {
 		return Token{}, err
@@ -669,7 +598,113 @@ func (l *Lexer) ExpectToken(want TokenType) (Token, *Error) {
 	return token, nil
 }
 
-func (l *Lexer) readString() (string, *Error) {
+
+func (l *Lexer) skipWithespace() (rune, bool) {
+	var (
+		next rune
+		ok   bool
+	)
+	for {
+		next, ok = l.input.TakeRune()
+		if !ok {
+			return 0, false
+		}
+
+		if !unicode.IsSpace(next) {
+			break
+		}
+	}
+
+	l.buffer.WriteRune(next)
+
+	return next, true
+}
+
+func (l *Lexer) readRune() (rune, bool) {
+	next, ok := l.input.TakeRune()
+	if !ok {
+		return 0, false
+	}
+
+	l.buffer.WriteRune(next)
+
+	return next, true
+}
+
+func (l *Lexer) readIf(want rune) bool {
+	got, ok := l.input.PeekRune()
+	if !ok {
+		return false
+	}
+
+	if got != want {
+		return false
+	}
+	_, ok = l.readRune()
+	return ok
+}
+
+func (l *Lexer) takeBuffer() string {
+	buffer := l.buffer.String()
+	l.buffer.Reset()
+	return buffer
+}
+
+func (l *Lexer) readLine() string {
+	for {
+		peek, ok := l.input.PeekRune()
+		if !ok {
+			return l.takeBuffer()
+		}
+
+		if peek == '\r' || peek == '\n' {
+
+			l.input.SkipRunes(1)
+			break
+		}
+
+		l.readRune()
+	}
+
+	peek, ok := l.input.PeekRune()
+	if !ok {
+		return l.takeBuffer()
+	}
+
+	if peek == '\r' || peek == '\n' {
+
+		l.input.SkipRunes(1)
+	}
+
+	return l.takeBuffer()
+}
+
+func (l *Lexer) lastRune() (rune, bool) {
+	if l.buffer.Len() == 0 {
+		return 0, false
+	}
+
+	current := []rune(l.buffer.String())
+	return current[len(current)-1], true
+}
+
+func (l *Lexer) readWhile(matchFn func(rune) bool) {
+	for {
+		nextRune, ok := l.input.PeekRune()
+		if !ok {
+			return
+		}
+
+		if !matchFn(nextRune) {
+			return
+		}
+
+		_, ok = l.readRune()
+	}
+}
+
+
+func (l *Lexer) readString() (string, error) {
 	delimiter, ok := l.lastRune()
 	if !ok {
 		panic("should not call readString() without reading a single quote or doulbe quote first")
@@ -700,7 +735,7 @@ func (l *Lexer) ReadRunes() int {
 	return int(l.input.Size()) - l.input.Len()
 }
 
-func (l *Lexer) readNumber() (Token, *Error) {
+func (l *Lexer) readNumber() (Token, error) {
 	lastRead, ok := l.lastRune()
 	if !ok {
 		panic("should not call readNumber() without reading a digit first")
@@ -743,7 +778,7 @@ func (l *Lexer) readNumber() (Token, *Error) {
 				}
 			}
 
-		} else if unicode.IsDigit(peeked) {
+		} else if unicode.IsDigit(lastRead) {
 			for {
 				peeked, ok := l.input.PeekRune()
 				if !ok {
