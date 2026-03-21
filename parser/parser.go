@@ -9,26 +9,18 @@ import (
 )
 
 type Parser struct {
-	lexer            lexer.Lexer
-	constants        []vm.Value
-	byteCodes        []vm.ByteCode
-	nilConstantPos   *byte
-	trueConstantPos  *byte
-	falseConstantPos *byte
-	stringConstants  map[string]byte
-	integerConstants map[int64]byte
-	floatConstants   map[float64]byte
-	locals           []string
-	localsIndex      map[string]byte
+	lexer       lexer.Lexer
+	constants   *constantTable
+	byteCodes   []vm.ByteCode
+	locals      []string
+	localsIndex map[string]byte
 }
 
 func NewParser(input string) *Parser {
 	return &Parser{
-		lexer:            *lexer.NewLexer(input),
-		stringConstants:  map[string]byte{},
-		integerConstants: map[int64]byte{},
-		floatConstants:   map[float64]byte{},
-		localsIndex:      map[string]byte{},
+		lexer:       *lexer.NewLexer(input),
+		constants:   newConstantTable(),
+		localsIndex: map[string]byte{},
 	}
 }
 
@@ -73,8 +65,8 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 		}
 	}
 
-	constants, byteCodes := p.constants, p.byteCodes
-	p.constants, p.byteCodes = nil, nil
+	constants, byteCodes := p.constants.constants, p.byteCodes
+	p.constants, p.byteCodes = newConstantTable(), nil
 
 	return constants, byteCodes, nil
 }
@@ -87,11 +79,11 @@ func (p *Parser) assignment(identifier string) error {
 		if err := p.loadExpression(localIndex); err != nil {
 			return fmt.Errorf("reading right hand value of assignment to local '%v': %w", identifier, err)
 		}
-		
+
 		return nil
 	}
 
-	destination := p.addStringConstant(identifier)
+	destination := p.constants.addString(identifier)
 
 	token, err := p.lexer.Next()
 	if err != nil {
@@ -100,22 +92,22 @@ func (p *Parser) assignment(identifier string) error {
 
 	switch token.Type {
 	case lexer.Nil:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addNilConstant()))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addNil()))
 	case lexer.True:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addTrueConstant()))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addTrue()))
 	case lexer.False:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addFalseConstant()))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addFalse()))
 	case lexer.Integer:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addIntegerConstant(token.Integer)))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addInt(token.Integer)))
 	case lexer.Float:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addFloatConstant(token.Float)))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addFloat(token.Float)))
 	case lexer.String:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.addStringConstant(token.Str)))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(destination, p.constants.addString(token.Str)))
 	case lexer.Identifier:
 		if localIndex, ok := p.localsIndex[token.Str]; ok {
 			p.byteCodes = append(p.byteCodes, vm.SetGlobal(destination, localIndex))
 		} else {
-			p.byteCodes = append(p.byteCodes, vm.SetGlobalGlobal(destination, p.addStringConstant(token.Str)))
+			p.byteCodes = append(p.byteCodes, vm.SetGlobalGlobal(destination, p.constants.addString(token.Str)))
 		}
 	default:
 		return fmt.Errorf("did not expect token %v' as expression", token.Type.String())
@@ -136,7 +128,7 @@ func (p *Parser) functionCall(identifier string) error {
 	switch next.Type {
 	case lexer.String:
 
-		p.byteCodes = append(p.byteCodes, vm.LoadConst(funcPos+1, p.addStringConstant(next.Str)))
+		p.byteCodes = append(p.byteCodes, vm.LoadConst(funcPos+1, p.constants.addString(next.Str)))
 
 	case lexer.OpenBracket:
 		if err := p.loadExpression(funcPos + 1); err != nil {
@@ -194,12 +186,12 @@ func (p *Parser) loadExpression(destination byte) error {
 			}
 			p.byteCodes = append(p.byteCodes, byteCode)
 		} else {
-			p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addIntegerConstant(token.Integer)))
+			p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addInt(token.Integer)))
 		}
 	case lexer.Float:
-		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addFloatConstant(token.Float)))
+		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addFloat(token.Float)))
 	case lexer.String:
-		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.addStringConstant(token.Str)))
+		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addString(token.Str)))
 	case lexer.Identifier:
 		p.loadVar(destination, token.Str)
 	default:
@@ -209,74 +201,92 @@ func (p *Parser) loadExpression(destination byte) error {
 	return nil
 }
 
-func (p *Parser) addStringConstant(value string) byte {
-	pos, ok := p.stringConstants[value]
-	if !ok {
-		p.constants = append(p.constants, vm.NewString(value))
-		pos = byte(len(p.constants) - 1)
-		p.stringConstants[value] = pos
-	}
-
-	return pos
-}
-
-func (p *Parser) addNilConstant() byte {
-	if p.nilConstantPos != nil {
-		return *p.nilConstantPos
-	}
-	p.constants = append(p.constants, vm.NewNil())
-	pos := byte(len(p.constants) - 1)
-	p.nilConstantPos = &pos
-	return pos
-}
-
-func (p *Parser) addTrueConstant() byte {
-	if p.trueConstantPos != nil {
-		return *p.trueConstantPos
-	}
-	p.constants = append(p.constants, vm.NewBoolean(true))
-	pos := byte(len(p.constants) - 1)
-	p.trueConstantPos = &pos
-	return pos
-}
-
-func (p *Parser) addFalseConstant() byte {
-	if p.falseConstantPos != nil {
-		return *p.falseConstantPos
-	}
-	p.constants = append(p.constants, vm.NewBoolean(false))
-	pos := byte(len(p.constants) - 1)
-	p.falseConstantPos = &pos
-	return pos
-}
-
-func (p *Parser) addIntegerConstant(value int64) byte {
-	pos, ok := p.integerConstants[value]
-	if !ok {
-		p.constants = append(p.constants, vm.NewInteger(value))
-		pos = byte(len(p.constants) - 1)
-		p.integerConstants[value] = pos
-	}
-
-	return pos
-}
-
-func (p *Parser) addFloatConstant(value float64) byte {
-	pos, ok := p.floatConstants[value]
-	if !ok {
-		p.constants = append(p.constants, vm.NewFloat(value))
-		pos = byte(len(p.constants) - 1)
-		p.floatConstants[value] = pos
-	}
-
-	return pos
-}
-
 func (p *Parser) loadVar(destination byte, identifier string) {
 	if pos, ok := p.localsIndex[identifier]; ok {
 		p.byteCodes = append(p.byteCodes, vm.Move(destination, pos))
 		return
 	}
 
-	p.byteCodes = append(p.byteCodes, vm.GetGlobal(destination, p.addStringConstant(identifier)))
+	p.byteCodes = append(p.byteCodes, vm.GetGlobal(destination, p.constants.addString(identifier)))
+}
+
+type constantTable struct {
+	constants        []vm.Value
+	nilConstantPos   *byte
+	trueConstantPos  *byte
+	falseConstantPos *byte
+	stringConstants  map[string]byte
+	integerConstants map[int64]byte
+	floatConstants   map[float64]byte
+}
+
+func newConstantTable() *constantTable {
+	return &constantTable{
+		stringConstants:  map[string]byte{},
+		integerConstants: map[int64]byte{},
+		floatConstants:   map[float64]byte{},
+	}
+}
+
+func (c *constantTable) addString(value string) byte {
+	pos, ok := c.stringConstants[value]
+	if !ok {
+		c.constants = append(c.constants, vm.NewString(value))
+		pos = byte(len(c.constants) - 1)
+		c.stringConstants[value] = pos
+	}
+
+	return pos
+}
+
+func (c *constantTable) addNil() byte {
+	if c.nilConstantPos != nil {
+		return *c.nilConstantPos
+	}
+	c.constants = append(c.constants, vm.NewNil())
+	pos := byte(len(c.constants) - 1)
+	c.nilConstantPos = &pos
+	return pos
+}
+
+func (c *constantTable) addTrue() byte {
+	if c.trueConstantPos != nil {
+		return *c.trueConstantPos
+	}
+	c.constants = append(c.constants, vm.NewBoolean(true))
+	pos := byte(len(c.constants) - 1)
+	c.trueConstantPos = &pos
+	return pos
+}
+
+func (c *constantTable) addFalse() byte {
+	if c.falseConstantPos != nil {
+		return *c.falseConstantPos
+	}
+	c.constants = append(c.constants, vm.NewBoolean(false))
+	pos := byte(len(c.constants) - 1)
+	c.falseConstantPos = &pos
+	return pos
+}
+
+func (c *constantTable) addInt(value int64) byte {
+	pos, ok := c.integerConstants[value]
+	if !ok {
+		c.constants = append(c.constants, vm.NewInteger(value))
+		pos = byte(len(c.constants) - 1)
+		c.integerConstants[value] = pos
+	}
+
+	return pos
+}
+
+func (c *constantTable) addFloat(value float64) byte {
+	pos, ok := c.floatConstants[value]
+	if !ok {
+		c.constants = append(c.constants, vm.NewFloat(value))
+		pos = byte(len(c.constants) - 1)
+		c.floatConstants[value] = pos
+	}
+
+	return pos
 }
