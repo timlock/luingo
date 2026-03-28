@@ -16,6 +16,7 @@ type Token struct {
 	Integer int64
 }
 
+//go:generate go tool stringer -type=TokenType
 type TokenType int
 
 const (
@@ -79,137 +80,8 @@ const (
 	Integer
 	String
 	Identifier
-	LineComment
 )
 
-func (t TokenType) String() string {
-	switch t {
-	case And:
-		return "and"
-	case Break:
-		return "break"
-	case Do:
-		return "do"
-	case Else:
-		return "else"
-	case ElseIf:
-		return "elseif"
-	case End:
-		return "end"
-	case False:
-		return "false"
-	case For:
-		return "for"
-	case Function:
-		return "function"
-	case Global:
-		return "global"
-	case Goto:
-		return "goto"
-	case If:
-		return "if"
-	case In:
-		return "in"
-	case Local:
-		return "local"
-	case Nil:
-		return "nil"
-	case Not:
-		return "not"
-	case Or:
-		return "or"
-	case Repeat:
-		return "repeat"
-	case Return:
-		return "return"
-	case Then:
-		return "then"
-	case True:
-		return "true"
-	case Until:
-		return "until"
-	case While:
-		return "while"
-	case Plus:
-		return "+"
-	case Minus:
-		return "-"
-	case Asterisk:
-		return "*"
-	case Slash:
-		return "//"
-	case Percentage:
-		return "%"
-	case Cirumflex:
-		return "^"
-	case Hashtag:
-		return "#"
-	case Ampersand:
-		return "&"
-	case Tilde:
-		return "~"
-	case Pipe:
-		return "|"
-	case RightShfit:
-		return "=<<"
-	case LeftShift:
-		return "==>"
-	case EscpaedSlash:
-		return "\\\\"
-	case Equal:
-		return "=="
-	case NotEqual:
-		return "~="
-	case SmallerThan:
-		return "<="
-	case GreaterThan:
-		return ">="
-	case Smaller:
-		return "<"
-	case Greater:
-		return ">"
-	case Assign:
-		return "="
-	case OpenBracket:
-		return "("
-	case ClosedBracket:
-		return ")"
-	case OpenBrace:
-		return "["
-	case ClosedBrace:
-		return "]"
-	case OpenSquareBracket:
-		return "{"
-	case ClosedSquareBracket:
-		return "}"
-	case DoubleColon:
-		return "::"
-	case SemiColon:
-		return ";"
-	case Colon:
-		return ":"
-	case Comma:
-		return ","
-	case Dot:
-		return "."
-	case DoubleDot:
-		return ".."
-	case TrippleDot:
-		return "..."
-	case String:
-		return "string"
-	case Identifier:
-		return "identifier"
-	case LineComment:
-		return "LineComment"
-	case Integer:
-		return "integer"
-	case Float:
-		return "float"
-	default:
-		panic(fmt.Sprintf("unexpected lexer.TokenType: %#v", t))
-	}
-}
 
 func FromString(value string) (TokenType, error) {
 	switch value {
@@ -473,8 +345,9 @@ func (l *Lexer) next() (Token, error) {
 	case '-':
 		ok := l.readIf('-')
 		if ok {
-			comment := l.readLine()
-			return Token{Type: LineComment, Str: comment}, nil
+			// skip line comment
+			_ = l.readLine()
+			return l.next()
 		}
 		return Token{Type: Minus}, nil
 	case '*':

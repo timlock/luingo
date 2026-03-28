@@ -3,13 +3,13 @@ package vm
 import (
 	"encoding/binary"
 	"fmt"
-	"reflect"
 )
 
 type vmFunc func(*VM) int
 
 type OpCode byte
 
+//go:generate go tool stringer -type=OpCode
 const (
 	getGlobal OpCode = iota
 	setGlobal
@@ -21,34 +21,11 @@ const (
 	loadBool
 	loadInt
 	move
-	)
-
-func (o OpCode) String() string {
-	switch o {
-	case call:
-		return "Call"
-	case getGlobal:
-		return "GetGlobal"
-	case setGlobal:
-		return "SetGlobal"
-	case setGlobalConst:
-		return "SetGlobalConst"
-	case setGlobalGlobal:
-		return "SetGlobalGlobal"
-	case loadBool:
-		return "LoadBool"
-	case loadConst:
-		return "LoadConst"
-	case loadInt:
-		return "LoadInt"
-	case loadNil:
-		return "LoadNil"
-	case move:
-		return "Move"
-	default:
-		panic(fmt.Sprintf("unexpected vm.OpCode: %#v", o))
-	}
-}
+	newTable
+	setTable
+	setField
+	setList
+)
 
 type ByteCode struct {
 	opCode OpCode
@@ -60,19 +37,19 @@ func (b ByteCode) String() string {
 }
 
 func GetGlobal(stackIndex, globalIndex byte) ByteCode {
-	return ByteCode{getGlobal, [3]byte{stackIndex, globalIndex, 0}}
+	return ByteCode{getGlobal, [3]byte{stackIndex, globalIndex}}
 }
 
 func LoadConst(stackIndex, constIndex byte) ByteCode {
-	return ByteCode{loadConst, [3]byte{stackIndex, constIndex, 0}}
+	return ByteCode{loadConst, [3]byte{stackIndex, constIndex}}
 }
 
 func Call(stackIndex, parameters byte) ByteCode {
-	return ByteCode{call, [3]byte{stackIndex, parameters, 0}}
+	return ByteCode{call, [3]byte{stackIndex, parameters}}
 }
 
 func LoadNil(stackIndex byte) ByteCode {
-	return ByteCode{loadNil, [3]byte{stackIndex, 0, 0}}
+	return ByteCode{loadNil, [3]byte{stackIndex}}
 }
 
 func LoadBool(stackIndex byte, value bool) ByteCode {
@@ -81,7 +58,7 @@ func LoadBool(stackIndex byte, value bool) ByteCode {
 		byteValue = 1
 	}
 
-	return ByteCode{loadBool, [3]byte{stackIndex, byteValue, 0}}
+	return ByteCode{loadBool, [3]byte{stackIndex, byteValue}}
 }
 
 func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
@@ -94,95 +71,96 @@ func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
 }
 
 func Move(stackIndex, localsIndex byte) ByteCode {
-	bytes := [3]byte{stackIndex, localsIndex, 0}
-
-	return ByteCode{move, bytes}
+	return ByteCode{move, [3]byte{stackIndex, localsIndex}}
 }
 
 func SetGlobalConst(globalIndex, constIndex byte) ByteCode {
-	bytes := [3]byte{globalIndex, constIndex, 0}
-
-	return ByteCode{setGlobalConst, bytes}
+	return ByteCode{setGlobalConst, [3]byte{globalIndex, constIndex}}
 }
 
 func SetGlobal(globalIndex, stackIndex byte) ByteCode {
-	bytes := [3]byte{globalIndex, stackIndex, 0}
-
-	return ByteCode{setGlobal, bytes}
+	return ByteCode{setGlobal, [3]byte{globalIndex, stackIndex}}
 }
 
 func SetGlobalGlobal(globalIndex, constIndex byte) ByteCode {
-	bytes := [3]byte{globalIndex, constIndex, 0}
+	return ByteCode{setGlobalGlobal, [3]byte{globalIndex, constIndex}}
+}
 
-	return ByteCode{setGlobalGlobal, bytes}
+func NewTableByteCode(tableStackIndex, listSize, tableSize byte) ByteCode {
+	return ByteCode{newTable, [3]byte{tableStackIndex, listSize, tableSize}}
+}
+
+func SetTable(tableStackIndex, keyStackIndex, valueStackIndex byte) ByteCode {
+	return ByteCode{setTable, [3]byte{tableStackIndex, keyStackIndex, valueStackIndex}}
+}
+
+func SetField(tableStackIndex, keyConstIndex, valueStackIndex byte) ByteCode {
+	return ByteCode{setField, [3]byte{tableStackIndex, keyConstIndex, valueStackIndex}}
+}
+
+func SetList(tableStackIndex, length byte) ByteCode {
+	return ByteCode{setList, [3]byte{tableStackIndex, length}}
 }
 
 type Value struct {
-	Type  Type
-	Inner any
+	valueType Type
+	inner     any //TODO store basic types in separate variable
 }
 
 func (v Value) String() string {
-	switch v.Type {
-	case FunctionType:
+	switch v.valueType {
+	case TypeFunction:
 		return "function"
 	default:
-		return fmt.Sprint(v.Inner)
+		return fmt.Sprint(v.inner)
 	}
 }
+
+//go:generate go tool stringer -type=Type -trimprefix Type
 
 type Type int
 
 const (
-	StringType Type = iota
-	FloatType
-	IntegerType
-	FunctionType
-	BooleanType
-	NilType
+	TypeString Type = iota
+	TypeFloat
+	TypeInteger
+	TypeFunction
+	TypeBoolean
+	TypeNil
+	TypeTable
 )
 
-func (t Type) String() string {
-	switch t {
-	case StringType:
-		return "String"
-	case FloatType:
-		return "Float"
-	case IntegerType:
-		return "Integer"
-	case BooleanType:
-		return "Boolean"
-	case FunctionType:
-		return "Function"
-	case NilType:
-		return "Nil"
-	default:
-		panic(fmt.Sprintf("unexpected vm.Type: %#v", t))
-	}
-}
-
 func NewNil() Value {
-	return Value{NilType, nil}
+	return Value{TypeNil, nil}
 }
 
 func NewString(value string) Value {
-	return Value{StringType, value}
+	return Value{TypeString, value}
 }
 
 func NewFuntion(fn vmFunc) Value {
-	return Value{FunctionType, fn}
+	return Value{TypeFunction, fn}
 }
 
 func NewInteger(value int64) Value {
-	return Value{IntegerType, value}
+	return Value{TypeInteger, value}
 }
 
 func NewFloat(value float64) Value {
-	return Value{FloatType, value}
+	return Value{TypeFloat, value}
 }
 
 func NewBoolean(value bool) Value {
-	return Value{BooleanType, value}
+	return Value{TypeBoolean, value}
+}
+
+func NewTable(value Table) Value {
+	return Value{TypeTable, value}
+}
+
+type Table struct {
+	List  []Value
+	Inner map[Value]Value
 }
 
 type VM struct {
@@ -203,24 +181,22 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			v.funcIndex = int(stackIndex)
 
 			stackItem := v.stack[stackIndex]
-			if stackItem.Type != FunctionType {
-				return fmt.Errorf("expected %v. stack item to be a function but it is of type %v", stackIndex, stackItem.Type)
+			if stackItem.valueType != TypeFunction {
+				return fmt.Errorf("expected %v. stack item to be a function but it is of type %v", stackIndex, stackItem.valueType)
 			}
 
-			function, ok := stackItem.Inner.(vmFunc)
-			if !ok {
-				panic(fmt.Sprintf("Value type is %v but inner is %v", stackItem.Type, reflect.TypeOf(function)))
-			}
+			function := stackItem.inner.(vmFunc)
 			_ = function(v)
 
 		case getGlobal:
 			globalIndex := byteCode.args[1]
 			constant := constants[globalIndex]
-			if constant.Type != StringType {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			if constant.valueType != TypeString {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
 			}
 
-			globalName := constant.Inner.(string)
+			globalName := constant.inner.(string)
+
 			global, ok := v.globals[globalName]
 			if !ok {
 				global = NewNil()
@@ -233,8 +209,8 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 		case setGlobal:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
-			if constant.Type != StringType {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			if constant.valueType != TypeString {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
 			}
 
 			stackIndex := byteCode.args[1]
@@ -243,17 +219,17 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 		case setGlobalGlobal:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
-			if constant.Type != StringType {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			if constant.valueType != TypeString {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
 			}
 
 			rhGlobalIndex := byteCode.args[1]
 			rhConstant := constants[rhGlobalIndex]
-			if rhConstant.Type != StringType {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, rhConstant.Type)
+			if rhConstant.valueType != TypeString {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, rhConstant.valueType)
 			}
 			rhGlobal, ok := v.globals[rhConstant.String()]
-			if !ok{
+			if !ok {
 				rhGlobal = NewNil()
 			}
 			v.globals[constant.String()] = rhGlobal
@@ -261,8 +237,8 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 		case setGlobalConst:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
-			if constant.Type != StringType {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.Type)
+			if constant.valueType != TypeString {
+				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
 			}
 
 			constIndex := byteCode.args[1]
@@ -293,10 +269,61 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			}
 
 			v.setStack(int(stackIndex), NewInteger(int64(integer)))
+
 		case move:
 			destinationIndex := byteCode.args[0]
 			sourceIndex := byteCode.args[1]
 			v.setStack(int(destinationIndex), v.stack[sourceIndex])
+
+		case newTable:
+			stackIndex := byteCode.args[0]
+			listSize := byteCode.args[1]
+			tableSize := byteCode.args[2]
+			v.setStack(int(stackIndex), NewTable(Table{make([]Value, 0, listSize), make(map[Value]Value, tableSize)}))
+
+		case setTable:
+			tableStackIndex := byteCode.args[0]
+			keyStackIndex := byteCode.args[1]
+			valueStackIndex := byteCode.args[2]
+
+			tableValue := v.stack[tableStackIndex]
+			if tableValue.valueType != TypeTable {
+				return fmt.Errorf("expected stack value to be a table but it is of type %v", tableValue.valueType)
+			}
+			key := v.stack[keyStackIndex]
+			value := v.stack[valueStackIndex]
+			table := tableValue.inner.(Table)
+			table.Inner[key] = value
+
+		case setField:
+			tableStackIndex := byteCode.args[0]
+			keyConstIndex := byteCode.args[1]
+			valueStackIndex := byteCode.args[2]
+
+			tableValue := v.stack[tableStackIndex]
+			if tableValue.valueType != TypeTable {
+				return fmt.Errorf("expected stack value to be a table but it is of type %v", tableValue.valueType)
+			}
+			key := constants[keyConstIndex]
+			value := v.stack[valueStackIndex]
+			table := tableValue.inner.(Table)
+			table.Inner[key] = value
+
+		case setList:
+			tableStackIndex := byteCode.args[0]
+			listSize := byteCode.args[1]
+
+			tableValue := v.stack[tableStackIndex]
+			if tableValue.valueType != TypeTable {
+				return fmt.Errorf("expected %v stack value to be a table but it is of type %v", tableValue.valueType)
+			}
+			table := tableValue.inner.(Table)
+
+			for i := tableStackIndex + 1; i < tableStackIndex+1+listSize; i++ {
+				table.List = append(table.List, v.stack[i])
+				v.stack[i] = Value{}
+			}
+
 		default:
 			return fmt.Errorf("unexpected vm.OpCode: %v", byteCode.opCode)
 		}

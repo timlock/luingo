@@ -58,8 +58,6 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 			if err := p.local(); err != nil {
 				return nil, nil, fmt.Errorf("parsing local statement: %w", err)
 			}
-		case lexer.LineComment:
-			// ignore comment
 		default:
 			return nil, nil, fmt.Errorf("%v did not expect token '%v'", p.lexer.Cursor(), token.Type.String())
 		}
@@ -194,10 +192,137 @@ func (p *Parser) loadExpression(destination byte) error {
 		p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addString(token.Str)))
 	case lexer.Identifier:
 		p.loadVar(destination, token.Str)
+	case lexer.OpenBrace:
+		if err := p.loadTableConstructor(destination); err != nil {
+			return fmt.Errorf("loading table constructor: %w", err)
+		}
+
 	default:
 		return fmt.Errorf("did not expect token %v' as expression", token.Type.String())
 	}
 
+	return nil
+}
+
+func (p *Parser) loadTableConstructor(tableStackIndex byte) error {
+	p.byteCodes = append(p.byteCodes, vm.NewTableByteCode(tableStackIndex, 0, 0))
+	var listCount byte
+	var tableCount byte
+
+	currentStackIndex := tableStackIndex
+loop:
+	for {
+		peeked, err := p.lexer.Peek()
+		if err != nil {
+			return err
+		}
+
+		switch peeked.Type {
+		case lexer.ClosedBrace:
+			p.lexer.Next()
+			break loop
+		case lexer.OpenSquareBracket:
+			tableCount++
+
+			currentStackIndex++
+			if err := p.loadExpression(currentStackIndex); err != nil {
+				return fmt.Errorf("loading table key expression: %w", err)
+			}
+			if _, err := p.lexer.ExpectToken(lexer.ClosedSquareBracket); err != nil {
+				return err
+			}
+			if _, err := p.lexer.ExpectToken(lexer.Assign); err != nil {
+				return err
+			}
+
+			currentStackIndex++
+			if err := p.loadExpression(currentStackIndex); err != nil {
+				return fmt.Errorf("loading table value expression: %w", err)
+			}
+
+			p.byteCodes = append(p.byteCodes, vm.SetTable(tableStackIndex, currentStackIndex-1, currentStackIndex))
+		case lexer.Identifier:
+			keyOrValue := peeked
+			p.lexer.Next()
+
+			peeked, err := p.lexer.Peek()
+			if err != nil {
+				return err
+			}
+
+			switch peeked.Type {
+			case lexer.Assign:
+				tableCount++
+				p.lexer.Next()
+
+				currentStackIndex++
+				keyConstIndex := p.constants.addString(keyOrValue.Str)
+				p.byteCodes = append(p.byteCodes, vm.LoadConst(currentStackIndex, keyConstIndex))
+				if _, err := p.lexer.ExpectToken(lexer.Assign); err != nil {
+					return err
+				}
+
+				currentStackIndex++
+				if err := p.loadExpression(currentStackIndex); err != nil {
+					return fmt.Errorf("loading table value expression: %w", err)
+				}
+
+				p.byteCodes = append(p.byteCodes, vm.SetField(tableStackIndex, keyConstIndex, currentStackIndex))
+			case lexer.ClosedBrace:
+				fallthrough
+			case lexer.Comma:
+				fallthrough
+			case lexer.SemiColon:
+				listCount++
+				p.lexer.Next()
+
+				currentStackIndex++
+				p.loadVar(tableStackIndex, keyOrValue.Str)
+
+				listValuesOnStack := currentStackIndex - tableStackIndex
+				if listValuesOnStack > 50 {
+					//clear stack
+					p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, listValuesOnStack))
+					currentStackIndex = tableStackIndex
+				}
+			}
+		default:
+			listCount++
+			p.lexer.Next()
+
+			currentStackIndex++
+			if err := p.loadExpression(currentStackIndex); err != nil {
+				return fmt.Errorf("loading table list expression: %w", err)
+			}
+
+			listValuesOnStack := currentStackIndex - tableStackIndex
+			if listValuesOnStack > 50 {
+				//clear stack
+				p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, listValuesOnStack))
+				currentStackIndex = tableStackIndex
+			}
+		}
+
+		peeked, err = p.lexer.Peek()
+		if err != nil {
+			return err
+		}
+
+		switch peeked.Type {
+		case lexer.Comma:
+			fallthrough
+		case lexer.SemiColon:
+			p.lexer.Next()
+		case lexer.ClosedSquareBracket:
+		default:
+			return fmt.Errorf("expected comma, semicolon or closed square bracket but got '%v'", peeked.Type)
+		}
+	}
+
+	p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, currentStackIndex-tableStackIndex))
+	currentStackIndex = tableStackIndex
+
+	p.byteCodes[tableStackIndex] = vm.NewTableByteCode(tableStackIndex, listCount, tableCount)
 	return nil
 }
 
