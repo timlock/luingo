@@ -9,22 +9,26 @@ type vmFunc func(*VM) int
 
 type OpCode byte
 
-//go:generate go tool stringer -type=OpCode
+//go:generate go tool stringer -type=OpCode -trimprefix=OpCode
 const (
-	getGlobal OpCode = iota
-	setGlobal
-	setGlobalConst
-	setGlobalGlobal
-	loadConst
-	call
-	loadNil
-	loadBool
-	loadInt
-	move
-	newTable
-	setTable
-	setField
-	setList
+	OpCodeGetGlobal OpCode = iota
+	OpCodeSetGlobal
+	OpCodeSetGlobalConst
+	OpCodeSetGlobalGlobal
+	OpCodeLoadConst
+	OpCodeCall
+	OpCodeLoadNil
+	OpCodeLoadBool
+	OpCodeLoadInt
+	OpCodeMove
+	OpCodeNewTable
+	OpCodeSetTable
+	OpCdoeSetTableConst
+	OpCodeSetField
+	OpCodeSetFieldConst
+	OpCodeSetInt
+	OpCodeSetIntConst
+	OpCodeSetList
 )
 
 type ByteCode struct {
@@ -37,19 +41,19 @@ func (b ByteCode) String() string {
 }
 
 func GetGlobal(stackIndex, globalIndex byte) ByteCode {
-	return ByteCode{getGlobal, [3]byte{stackIndex, globalIndex}}
+	return ByteCode{OpCodeGetGlobal, [3]byte{stackIndex, globalIndex}}
 }
 
 func LoadConst(stackIndex, constIndex byte) ByteCode {
-	return ByteCode{loadConst, [3]byte{stackIndex, constIndex}}
+	return ByteCode{OpCodeLoadConst, [3]byte{stackIndex, constIndex}}
 }
 
 func Call(stackIndex, parameters byte) ByteCode {
-	return ByteCode{call, [3]byte{stackIndex, parameters}}
+	return ByteCode{OpCodeCall, [3]byte{stackIndex, parameters}}
 }
 
 func LoadNil(stackIndex byte) ByteCode {
-	return ByteCode{loadNil, [3]byte{stackIndex}}
+	return ByteCode{OpCodeLoadNil, [3]byte{stackIndex}}
 }
 
 func LoadBool(stackIndex byte, value bool) ByteCode {
@@ -58,7 +62,7 @@ func LoadBool(stackIndex byte, value bool) ByteCode {
 		byteValue = 1
 	}
 
-	return ByteCode{loadBool, [3]byte{stackIndex, byteValue}}
+	return ByteCode{OpCodeLoadBool, [3]byte{stackIndex, byteValue}}
 }
 
 func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
@@ -67,39 +71,55 @@ func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
 		return ByteCode{}, fmt.Errorf("converting int16 %v to 2 bytes: %w", value, err)
 	}
 
-	return ByteCode{loadInt, bytes}, nil
+	return ByteCode{OpCodeLoadInt, bytes}, nil
 }
 
 func Move(stackIndex, localsIndex byte) ByteCode {
-	return ByteCode{move, [3]byte{stackIndex, localsIndex}}
+	return ByteCode{OpCodeMove, [3]byte{stackIndex, localsIndex}}
 }
 
 func SetGlobalConst(globalIndex, constIndex byte) ByteCode {
-	return ByteCode{setGlobalConst, [3]byte{globalIndex, constIndex}}
+	return ByteCode{OpCodeSetGlobalConst, [3]byte{globalIndex, constIndex}}
 }
 
 func SetGlobal(globalIndex, stackIndex byte) ByteCode {
-	return ByteCode{setGlobal, [3]byte{globalIndex, stackIndex}}
+	return ByteCode{OpCodeSetGlobal, [3]byte{globalIndex, stackIndex}}
 }
 
 func SetGlobalGlobal(globalIndex, constIndex byte) ByteCode {
-	return ByteCode{setGlobalGlobal, [3]byte{globalIndex, constIndex}}
+	return ByteCode{OpCodeSetGlobalGlobal, [3]byte{globalIndex, constIndex}}
 }
 
 func NewTableByteCode(tableStackIndex, listSize, tableSize byte) ByteCode {
-	return ByteCode{newTable, [3]byte{tableStackIndex, listSize, tableSize}}
+	return ByteCode{OpCodeNewTable, [3]byte{tableStackIndex, listSize, tableSize}}
 }
 
 func SetTable(tableStackIndex, keyStackIndex, valueStackIndex byte) ByteCode {
-	return ByteCode{setTable, [3]byte{tableStackIndex, keyStackIndex, valueStackIndex}}
+	return ByteCode{OpCodeSetTable, [3]byte{tableStackIndex, keyStackIndex, valueStackIndex}}
+}
+
+func SetTableConst(tableStackIndex, keyStackIndex, valueConstIndex byte) ByteCode {
+	return ByteCode{OpCdoeSetTableConst, [3]byte{tableStackIndex, keyStackIndex, valueConstIndex}}
 }
 
 func SetField(tableStackIndex, keyConstIndex, valueStackIndex byte) ByteCode {
-	return ByteCode{setField, [3]byte{tableStackIndex, keyConstIndex, valueStackIndex}}
+	return ByteCode{OpCodeSetField, [3]byte{tableStackIndex, keyConstIndex, valueStackIndex}}
+}
+
+func SetInt(tableStackIndex, integer, valueStackIndex byte) ByteCode {
+	return ByteCode{OpCodeSetInt, [3]byte{tableStackIndex, integer, valueStackIndex}}
+}
+
+func SetIntConst(tableStackIndex, integer, valueConstIndex byte) ByteCode {
+	return ByteCode{OpCodeSetIntConst, [3]byte{tableStackIndex, integer, valueConstIndex}}
+}
+
+func SetFieldConst(tableStackIndex, keyConstIndex, valueConstIndex byte) ByteCode {
+	return ByteCode{OpCodeSetFieldConst, [3]byte{tableStackIndex, keyConstIndex, valueConstIndex}}
 }
 
 func SetList(tableStackIndex, length byte) ByteCode {
-	return ByteCode{setList, [3]byte{tableStackIndex, length}}
+	return ByteCode{OpCodeSetList, [3]byte{tableStackIndex, length}}
 }
 
 type Value struct {
@@ -176,7 +196,7 @@ func NewVM(globals map[string]Value) *VM {
 func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 	for _, byteCode := range byteCodes {
 		switch byteCode.opCode {
-		case call:
+		case OpCodeCall:
 			stackIndex := byteCode.args[0]
 			v.funcIndex = int(stackIndex)
 
@@ -188,7 +208,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			function := stackItem.inner.(vmFunc)
 			_ = function(v)
 
-		case getGlobal:
+		case OpCodeGetGlobal:
 			globalIndex := byteCode.args[1]
 			constant := constants[globalIndex]
 			if constant.valueType != TypeString {
@@ -206,7 +226,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 
 			v.setStack(int(stackIndex), global)
 
-		case setGlobal:
+		case OpCodeSetGlobal:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
 			if constant.valueType != TypeString {
@@ -216,7 +236,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			stackIndex := byteCode.args[1]
 			v.globals[constant.String()] = v.stack[stackIndex]
 
-		case setGlobalGlobal:
+		case OpCodeSetGlobalGlobal:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
 			if constant.valueType != TypeString {
@@ -234,7 +254,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			}
 			v.globals[constant.String()] = rhGlobal
 
-		case setGlobalConst:
+		case OpCodeSetGlobalConst:
 			globalIndex := byteCode.args[0]
 			constant := constants[globalIndex]
 			if constant.valueType != TypeString {
@@ -244,22 +264,22 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			constIndex := byteCode.args[1]
 			v.globals[constant.String()] = constants[constIndex]
 
-		case loadConst:
+		case OpCodeLoadConst:
 			stackIndex := byteCode.args[0]
 			constIndex := byteCode.args[1]
 
 			v.setStack(int(stackIndex), constants[constIndex])
 
-		case loadNil:
+		case OpCodeLoadNil:
 			stackIndex := byteCode.args[0]
 			v.setStack(int(stackIndex), NewNil())
 
-		case loadBool:
+		case OpCodeLoadBool:
 			stackIndex := byteCode.args[0]
 			isTrue := byteCode.args[1] == 1
 			v.setStack(int(stackIndex), NewBoolean(isTrue))
 
-		case loadInt:
+		case OpCodeLoadInt:
 			stackIndex := byteCode.args[0]
 
 			var integer int16
@@ -270,18 +290,18 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 
 			v.setStack(int(stackIndex), NewInteger(int64(integer)))
 
-		case move:
+		case OpCodeMove:
 			destinationIndex := byteCode.args[0]
 			sourceIndex := byteCode.args[1]
 			v.setStack(int(destinationIndex), v.stack[sourceIndex])
 
-		case newTable:
+		case OpCodeNewTable:
 			stackIndex := byteCode.args[0]
 			listSize := byteCode.args[1]
 			tableSize := byteCode.args[2]
 			v.setStack(int(stackIndex), NewTable(Table{make([]Value, 0, listSize), make(map[Value]Value, tableSize)}))
 
-		case setTable:
+		case OpCodeSetTable:
 			tableStackIndex := byteCode.args[0]
 			keyStackIndex := byteCode.args[1]
 			valueStackIndex := byteCode.args[2]
@@ -295,7 +315,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			table := tableValue.inner.(Table)
 			table.Inner[key] = value
 
-		case setField:
+		case OpCodeSetField:
 			tableStackIndex := byteCode.args[0]
 			keyConstIndex := byteCode.args[1]
 			valueStackIndex := byteCode.args[2]
@@ -309,7 +329,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 			table := tableValue.inner.(Table)
 			table.Inner[key] = value
 
-		case setList:
+		case OpCodeSetList:
 			tableStackIndex := byteCode.args[0]
 			listSize := byteCode.args[1]
 
