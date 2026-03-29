@@ -65,13 +65,10 @@ func LoadBool(stackIndex byte, value bool) ByteCode {
 	return ByteCode{OpCodeLoadBool, [3]byte{stackIndex, byteValue}}
 }
 
-func LoadInt(stackIndex byte, value int16) (ByteCode, error) {
+func LoadInt(stackIndex byte, value int16) (ByteCode) {
 	bytes := [3]byte{stackIndex, 0, 0}
-	if _, err := binary.Encode(bytes[1:], binary.BigEndian, value); err != nil {
-		return ByteCode{}, fmt.Errorf("converting int16 %v to 2 bytes: %w", value, err)
-	}
-
-	return ByteCode{OpCodeLoadInt, bytes}, nil
+	binary.BigEndian.PutUint16(bytes[1:], uint16(value))
+	return ByteCode{OpCodeLoadInt, bytes}
 }
 
 func Move(stackIndex, localsIndex byte) ByteCode {
@@ -282,11 +279,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 		case OpCodeLoadInt:
 			stackIndex := byteCode.args[0]
 
-			var integer int16
-			_, err := binary.Decode(byteCode.args[1:], binary.BigEndian, &integer)
-			if err != nil {
-				return fmt.Errorf("decoding integer from ByteCode %+v : %w", byteCode, err)
-			}
+			integer := binary.BigEndian.Uint16(byteCode.args[1:])
 
 			v.setStack(int(stackIndex), NewInteger(int64(integer)))
 
