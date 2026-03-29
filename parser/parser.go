@@ -166,7 +166,28 @@ func (p *Parser) local() error {
 	return nil
 }
 
-func (p *Parser) loadExpression2(destination byte, expression expression) error {
+func (p *Parser) loadExpTop(expression expression) error {
+	return p.loadExp(p.stackPointer, expression)
+}
+
+func (p *Parser) loadConstExp(expression expression) (byte, bool) {
+	switch expression.expressionType {
+	case expressioinBoolean:
+		return p.constants.addBoolean(expression.inner.(bool)), true
+	case expressionFloat:
+		return p.constants.addFloat(expression.inner.(float64)), true
+	case expressionInteger:
+		return p.constants.addInt(expression.inner.(int64)), true
+	case expressionNil:
+		return p.constants.addNil(), true
+	case expressionString:
+		return p.constants.addString(expression.inner.(string)), true
+	default:
+		return 0, false
+	}
+}
+
+func (p *Parser) loadExp(destination byte, expression expression) error {
 	switch expression.expressionType {
 	case expressionNil:
 		p.byteCodes = append(p.byteCodes, vm.LoadNil(destination))
@@ -175,12 +196,8 @@ func (p *Parser) loadExpression2(destination byte, expression expression) error 
 		p.byteCodes = append(p.byteCodes, vm.LoadBool(destination, value))
 	case expressionInteger:
 		value := expression.inner.(int64)
-		if value >= -32768 && value <= 32767 {
-			byteCode, err := vm.LoadInt(destination, int16(value))
-			if err != nil {
-				return err
-			}
-			p.byteCodes = append(p.byteCodes, byteCode)
+		if value >= math.MinInt16 && value <= math.MaxInt16 {
+			p.byteCodes = append(p.byteCodes, vm.LoadInt(destination, int16(value)))
 		} else {
 			p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addInt(value)))
 		}
@@ -206,7 +223,7 @@ func (p *Parser) loadExpression2(destination byte, expression expression) error 
 	return nil
 }
 
-func (p *Parser) expression() (expression, error) {
+func (p *Parser) readExpression() (expression, error) {
 	token, err := p.lexer.Next()
 	if err != nil {
 		return expression{}, fmt.Errorf("reading function parameter: %w", err)
@@ -249,6 +266,8 @@ func (p *Parser) tableConstructor() (expression, error) {
 
 loop:
 	for {
+		stackPointer := p.stackPointer
+
 		peeked, err := p.lexer.Peek()
 		if err != nil {
 			return expression{}, err
@@ -262,7 +281,7 @@ loop:
 			p.lexer.Next()
 			tableCount++
 
-			keyExpression, err := p.expression()
+			keyExpression, err := p.readExpression()
 			if err != nil {
 				return expression{}, fmt.Errorf("reading key expression: %w", err)
 			}
@@ -274,7 +293,7 @@ loop:
 				return expression{}, err
 			}
 
-			byteCode, byteCodeConst, keyIndex, err := func() (func(byte, byte, byte) vm.ByteCode, func(byte, byte, byte) vm.ByteCode, byte, error) {
+			byteCode, byteCodeConst, keyConstIndex, err := func() (func(byte, byte, byte) vm.ByteCode, func(byte, byte, byte) vm.ByteCode, byte, error) {
 				switch keyExpression.expressionType {
 				case expressionNil:
 					return nil, nil, 0, errors.New("key may not be nil")
@@ -283,22 +302,12 @@ loop:
 					value := keyExpression.inner.(float64)
 					if math.IsNaN(value) {
 						return nil, nil, 0, errors.New("number key may not be NaN")
-					} else {
-						if err := p.loadExpression2(p.stackPointer, keyExpression); err != nil {
-							return nil, nil, 0, err
-						}
-						return vm.SetTable, vm.SetTableConst, p.stackPointer, nil
 					}
-
 				case expressionInteger:
 					value := keyExpression.inner.(int)
 					if value <= math.MaxUint8 && value >= 0 {
-
-					} else if err := p.loadExpression2(p.stackPointer, keyExpression); err != nil {
-						return nil, nil, 0, err
+						return vm.SetInt, vm.SetIntConst, byte(value), nil
 					}
-					return vm.SetTable, vm.SetTableConst, p.stackPointer, nil
-
 				case expressionString:
 					value := keyExpression.inner.(string)
 					constIndex := p.constants.addString(value)
@@ -307,114 +316,95 @@ loop:
 				case expressionLocal:
 					value := keyExpression.inner.(byte)
 					return vm.SetTable, vm.SetTableConst, value, nil
-
-				default:
-					if err := p.loadExpression2(p.stackPointer, keyExpression); err != nil {
-						return nil, nil, 0, err
-					}
-					return vm.SetTable, vm.SetTableConst, p.stackPointer, nil
 				}
+
+				if err := p.loadExp(p.stackPointer, keyExpression); err != nil {
+					return nil, nil, 0, err
+				}
+				return vm.SetTable, vm.SetTableConst, p.stackPointer, nil
+
 			}()
 			if err != nil {
 				return expression{}, err
 			}
 
-			valueExpression, err := p.expression()
+			valueExpression, err := p.readExpression()
 			if err != nil {
 				return expression{}, fmt.Errorf("reading value expression: %w", err)
 			}
 
-			switch valueExpression.expressionType {
-			case expressionNil:
-				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyIndex, p.constants.addNil()))
-			case expressioinBoolean:
-				value := valueExpression.inner.(bool)
-				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyIndex, p.constants.addBoolean(value)))
-			case expressionInteger:
-				value := valueExpression.inner.(int64)
-				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyIndex, p.constants.addInt(value)))
-			case expressionFloat:
-				value := valueExpression.inner.(float64)
-				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyIndex, p.constants.addFloat(value)))
-			case expressionString:
-				value := valueExpression.inner.(string)
-				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyIndex, p.constants.addString(value)))
-			case expressionGlobal:
+			if valueConstIndex, ok := p.loadConstExp(valueExpression); ok {
+				p.byteCodes = append(p.byteCodes, byteCodeConst(tableStackIndex, keyConstIndex, valueConstIndex))
+			} else if err := p.loadExpTop(valueExpression); err != nil {
 				value := valueExpression.inner.(byte)
-				p.byteCodes = append(p.byteCodes, byteCode(tableStackIndex, keyIndex, value))
-			case expressionLocal:
-				value := valueExpression.inner.(byte)
-				p.byteCodes = append(p.byteCodes, byteCode(tableStackIndex, keyIndex, value))
-			default:
-				panic(fmt.Sprintf("unexpected parser.expressionType: %#v", valueExpression.expressionType))
+				p.byteCodes = append(p.byteCodes, byteCode(tableStackIndex, keyConstIndex, value))
 			}
 
-			tableCount++
 		case lexer.Identifier:
 			keyOrValue := peeked
 			p.lexer.Next()
 
 			peeked, err := p.lexer.Peek()
 			if err != nil {
-				return err
+				return expression{}, err
 			}
 
-			switch peeked.Type {
-			case lexer.Assign:
+			if peeked.Type == lexer.Assign {
 				tableCount++
 				p.lexer.Next()
-
-				currentStackIndex++
 				keyConstIndex := p.constants.addString(keyOrValue.Str)
-				p.byteCodes = append(p.byteCodes, vm.LoadConst(currentStackIndex, keyConstIndex))
-				if _, err := p.lexer.ExpectToken(lexer.Assign); err != nil {
-					return err
+
+				valueExpression, err := p.readExpression()
+				if err != nil {
+					return expression{}, fmt.Errorf("reading value expression: %w", err)
 				}
 
-				currentStackIndex++
-				if err := p.loadExpression(currentStackIndex); err != nil {
-					return fmt.Errorf("loading table value expression: %w", err)
+				if valueConstIndex, ok := p.loadConstExp(valueExpression); ok {
+					p.byteCodes = append(p.byteCodes, vm.SetFieldConst(tableStackIndex, keyConstIndex, valueConstIndex))
+				} else if err := p.loadExpTop(valueExpression); err != nil {
+					value := valueExpression.inner.(byte)
+					p.byteCodes = append(p.byteCodes, vm.SetField(tableStackIndex, keyConstIndex, value))
 				}
-
-				p.byteCodes = append(p.byteCodes, vm.SetField(tableStackIndex, keyConstIndex, currentStackIndex))
-			case lexer.ClosedBrace:
-				fallthrough
-			case lexer.Comma:
-				fallthrough
-			case lexer.SemiColon:
+			} else {
 				listCount++
-				p.lexer.Next()
 
-				currentStackIndex++
-				p.loadVar(tableStackIndex, keyOrValue.Str)
+				var valueExpression expression
+				if pos, ok := p.localsIndex[keyOrValue.Str]; ok {
+					valueExpression = newLocalExpression(pos)
+				} else {
+					valueExpression = newGlobalExpression(p.constants.addString(keyOrValue.Str))
+				}
 
-				listValuesOnStack := currentStackIndex - tableStackIndex
-				if listValuesOnStack > 50 {
-					//clear stack
-					p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, listValuesOnStack))
-					currentStackIndex = tableStackIndex
+				if err := p.loadExp(stackPointer, valueExpression); err != nil {
+					return expression{}, err
+				}
+
+				if listCount % 50 == 0 {
+					p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, 50))
+					p.stackPointer = tableStackIndex + 1
 				}
 			}
 		default:
 			listCount++
 			p.lexer.Next()
 
-			currentStackIndex++
-			if err := p.loadExpression(currentStackIndex); err != nil {
-				return fmt.Errorf("loading table list expression: %w", err)
+			valueExpression, err := p.readExpression()
+			if err != nil {
+				return expression{}, fmt.Errorf("reading list item expression: %w", err)
+			}
+			if err := p.loadExp(stackPointer, valueExpression); err != nil {
+				return expression{}, fmt.Errorf("loading list item expression: %w", err)
 			}
 
-			listValuesOnStack := currentStackIndex - tableStackIndex
-			if listValuesOnStack > 50 {
-				//clear stack
-				p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, listValuesOnStack))
-				currentStackIndex = tableStackIndex
+			if listCount % 50 == 0 {
+				p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, 50))
+				p.stackPointer = tableStackIndex + 1
 			}
 		}
 
 		peeked, err = p.lexer.Peek()
 		if err != nil {
-			return err
+			return expression{}, err
 		}
 
 		switch peeked.Type {
@@ -422,17 +412,19 @@ loop:
 			fallthrough
 		case lexer.SemiColon:
 			p.lexer.Next()
-		case lexer.ClosedSquareBracket:
+		case lexer.ClosedBrace:
 		default:
-			return fmt.Errorf("expected comma, semicolon or closed square bracket but got '%v'", peeked.Type)
+			return expression{}, fmt.Errorf("expected comma, semicolon or closed square brace but got '%v'", peeked.Type)
 		}
 	}
 
-	p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, currentStackIndex-tableStackIndex))
-	currentStackIndex = tableStackIndex
+	remainingListItems := listCount % 50
+	if remainingListItems > 0 {
+		p.byteCodes = append(p.byteCodes, vm.SetList(tableStackIndex, remainingListItems))
+	}
 
 	p.byteCodes[tableStackIndex] = vm.NewTableByteCode(tableStackIndex, listCount, tableCount)
-	return nil
+	return newLocalExpression(tableStackIndex), nil
 }
 
 func (p *Parser) loadExpression(destination byte) error {
@@ -448,12 +440,8 @@ func (p *Parser) loadExpression(destination byte) error {
 	case lexer.False:
 		p.byteCodes = append(p.byteCodes, vm.LoadBool(destination, false))
 	case lexer.Integer:
-		if token.Integer >= -32768 && token.Integer <= 32767 {
-			byteCode, err := vm.LoadInt(destination, int16(token.Integer))
-			if err != nil {
-				return err
-			}
-			p.byteCodes = append(p.byteCodes, byteCode)
+		if token.Integer >= math.MinInt16 && token.Integer <= math.MaxInt16 {
+			p.byteCodes = append(p.byteCodes, vm.LoadInt(destination, int16(token.Integer)))
 		} else {
 			p.byteCodes = append(p.byteCodes, vm.LoadConst(destination, p.constants.addInt(token.Integer)))
 		}
@@ -711,6 +699,22 @@ const (
 type expression struct {
 	expressionType expressionType
 	inner          any
+}
+
+func (e expression) isConst() bool {
+	switch e.expressionType {
+	case expressioinBoolean:
+		fallthrough
+	case expressionFloat:
+		fallthrough
+	case expressionInteger:
+		fallthrough
+	case expressionNil:
+		fallthrough
+	case expressionString:
+		return true
+	}
+	return false
 }
 
 func (e expression) getLocal() (byte, bool) {
