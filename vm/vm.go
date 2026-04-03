@@ -65,7 +65,7 @@ func LoadBool(stackIndex byte, value bool) ByteCode {
 	return ByteCode{OpCodeLoadBool, [3]byte{stackIndex, byteValue}}
 }
 
-func LoadInt(stackIndex byte, value int16) (ByteCode) {
+func LoadInt(stackIndex byte, value int16) ByteCode {
 	bytes := [3]byte{stackIndex, 0, 0}
 	binary.BigEndian.PutUint16(bytes[1:], uint16(value))
 	return ByteCode{OpCodeLoadInt, bytes}
@@ -328,7 +328,7 @@ func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
 
 			tableValue := v.stack[tableStackIndex]
 			if tableValue.valueType != TypeTable {
-				return fmt.Errorf("expected %v stack value to be a table but it is of type %v", tableValue.valueType)
+				return fmt.Errorf("expected %v stack value to be a table but it is of type %v", tableStackIndex, tableValue.valueType)
 			}
 			table := tableValue.inner.(Table)
 
