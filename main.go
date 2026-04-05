@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"luingo/interpreter"
+	"luingo/logging"
 	"os"
 	"time"
 )
@@ -19,12 +22,17 @@ func main() {
 	}
 
 	interpreter := interpreter.NewInterpreter(string(bytes))
-	
+	logger := slog.New(slog.NewTextHandler(
+		os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelInfo},
+	))
+	ctx := logging.WithLogger(context.Background(), logger)
+
 	start := time.Now()
-	if err := interpreter.Execute(); err != nil {
-		fmt.Printf("Error: %v\n", err)	
+	if err := interpreter.Execute(ctx); err != nil {
+		fmt.Printf("Error: %v\n", err)
 	}
 
 	fmt.Printf("Execution took %v", time.Since(start))
-	
+
 }

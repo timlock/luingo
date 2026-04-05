@@ -1,11 +1,306 @@
 package vm
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
+	"luingo/logging"
+	"strings"
 )
 
 type vmFunc func(*VM) int
+
+type VM struct {
+	globals   map[string]Value
+	stack     []Value
+	funcIndex int
+}
+
+func NewVM(globals map[string]Value) *VM {
+	return &VM{globals: globals}
+}
+
+func (v *VM) Execute(ctx context.Context, constants []Value, byteCodes []ByteCode) error {
+	logger := logging.Logger(ctx)
+
+	for byteCodeIndex, byteCode := range byteCodes {
+
+		logger.Debug(fmt.Sprintf("Step %v %+v", byteCodeIndex, byteCode))
+		if err := v.step(byteCode, constants); err != nil {
+			return fmt.Errorf("executing %+v: %w", byteCode, err)
+		}
+
+		logger.Debug("Stack: ")
+		var stringBuilder strings.Builder
+		for stackIndex, value := range v.stack {
+			fmt.Fprintf(&stringBuilder, "%v=[%v] ", stackIndex, value)
+		}
+		logger.Debug(stringBuilder.String())
+	}
+
+	return nil
+}
+
+func (v *VM) step(byteCode ByteCode, constants []Value) error {
+	switch byteCode.opCode {
+	case OpCodeCall:
+		stackIndex := byteCode.args[0]
+		v.funcIndex = int(stackIndex)
+
+		stackItem := v.stack[stackIndex]
+		if stackItem.valueType != TypeFunction {
+			return fmt.Errorf("expected %v. stack item to be a function but it is of type %v", stackIndex, stackItem.valueType)
+		}
+
+		function := stackItem.inner.(vmFunc)
+		_ = function(v)
+
+	case OpCodeGetGlobal:
+		globalIndex := byteCode.args[1]
+		constant := constants[globalIndex]
+		if constant.valueType != TypeString {
+			return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
+		}
+
+		globalName := constant.inner.(string)
+
+		global, ok := v.globals[globalName]
+		if !ok {
+			global = NewNil()
+		}
+
+		stackIndex := byteCode.args[0]
+
+		v.setStack(int(stackIndex), global)
+
+	case OpCodeSetGlobal:
+		globalIndex := byteCode.args[0]
+		constant := constants[globalIndex]
+		if constant.valueType != TypeString {
+			return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
+		}
+
+		stackIndex := byteCode.args[1]
+		v.globals[constant.String()] = v.stack[stackIndex]
+
+	case OpCodeSetGlobalGlobal:
+		globalIndex := byteCode.args[0]
+		constant := constants[globalIndex]
+		if constant.valueType != TypeString {
+			return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
+		}
+
+		rhGlobalIndex := byteCode.args[1]
+		rhConstant := constants[rhGlobalIndex]
+		if rhConstant.valueType != TypeString {
+			return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, rhConstant.valueType)
+		}
+		rhGlobal, ok := v.globals[rhConstant.String()]
+		if !ok {
+			rhGlobal = NewNil()
+		}
+		v.globals[constant.String()] = rhGlobal
+
+	case OpCodeSetGlobalConst:
+		globalIndex := byteCode.args[0]
+		constant := constants[globalIndex]
+		if constant.valueType != TypeString {
+			return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
+		}
+
+		constIndex := byteCode.args[1]
+		v.globals[constant.String()] = constants[constIndex]
+
+	case OpCodeLoadConst:
+		stackIndex := byteCode.args[0]
+		constIndex := byteCode.args[1]
+
+		v.setStack(int(stackIndex), constants[constIndex])
+
+	case OpCodeLoadNil:
+		stackIndex := byteCode.args[0]
+		v.setStack(int(stackIndex), NewNil())
+
+	case OpCodeLoadBool:
+		stackIndex := byteCode.args[0]
+		isTrue := byteCode.args[1] == 1
+		v.setStack(int(stackIndex), NewBoolean(isTrue))
+
+	case OpCodeLoadInt:
+		stackIndex := byteCode.args[0]
+
+		integer := binary.BigEndian.Uint16(byteCode.args[1:])
+
+		v.setStack(int(stackIndex), NewInteger(int64(integer)))
+
+	case OpCodeMove:
+		destinationIndex := byteCode.args[0]
+		sourceIndex := byteCode.args[1]
+		v.setStack(int(destinationIndex), v.stack[sourceIndex])
+
+	case OpCodeNewTable:
+		stackIndex := byteCode.args[0]
+		listSize := byteCode.args[1]
+		tableSize := byteCode.args[2]
+		v.setStack(int(stackIndex), NewTable(&Table{make([]Value, 0, listSize), make(map[Value]Value, tableSize)}))
+
+	case OpCodeSetTable:
+		tableStackIndex := byteCode.args[0]
+		keyStackIndex := byteCode.args[1]
+		valueStackIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		key := v.stack[keyStackIndex]
+		value := v.stack[valueStackIndex]
+		table.Inner[key] = value
+
+	case OpCodeSetTableConst:
+		tableStackIndex := byteCode.args[0]
+		keyStackIndex := byteCode.args[1]
+		valueConstIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		key := v.stack[keyStackIndex]
+		value := constants[valueConstIndex]
+		table.Inner[key] = value
+
+	case OpCodeSetField:
+		tableStackIndex := byteCode.args[0]
+		keyConstIndex := byteCode.args[1]
+		valueStackIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		key := constants[keyConstIndex]
+		value := v.stack[valueStackIndex]
+		table.Inner[key] = value
+
+	case OpCodeSetFieldConst:
+		tableStackIndex := byteCode.args[0]
+		keyConstIndex := byteCode.args[1]
+		valueConstIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		key := constants[keyConstIndex]
+		value := constants[valueConstIndex]
+		table.Inner[key] = value
+
+	case OpCodeSetInt:
+		tableStackIndex := byteCode.args[0]
+		listIndex := byteCode.args[1]
+		valueStackIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		value := v.stack[valueStackIndex]
+		table.List[listIndex] = value
+
+	case OpCodeSetIntConst:
+		tableStackIndex := byteCode.args[0]
+		listIndex := byteCode.args[1]
+		valueConstIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		value := constants[valueConstIndex]
+		table.List[listIndex] = value
+
+	case OpCodeSetList:
+		tableStackIndex := byteCode.args[0]
+		listSize := byteCode.args[1]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+
+		for i := tableStackIndex + 1; i < tableStackIndex+1+listSize; i++ {
+			table.List = append(table.List, v.stack[i])
+			v.stack[i] = Value{}
+		}
+
+	case OpCodeGetField:
+		destination := byteCode.args[0]
+		tableStackIndex := byteCode.args[1]
+		keyStackIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		keyValue := v.stack[keyStackIndex]
+
+		v.setStack(int(destination), table.Inner[keyValue])
+
+	case OpCodeGetInt:
+		destination := byteCode.args[0]
+		tableStackIndex := byteCode.args[1]
+		listIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+
+		v.setStack(int(destination), table.List[listIndex])
+
+	case OpCodeGetTable:
+		destination := byteCode.args[0]
+		tableStackIndex := byteCode.args[1]
+		keyConstIndex := byteCode.args[2]
+
+		table, err := v.getTable(tableStackIndex)
+		if err != nil {
+			return err
+		}
+		keyValue := constants[keyConstIndex]
+
+		v.setStack(int(destination), table.Inner[keyValue])
+
+	default:
+		panic(fmt.Sprintf("unexpected vm.OpCode: %#v", byteCode.opCode))
+	}
+
+	return nil
+}
+
+func (v *VM) setStack(index int, value Value) {
+	for i := len(v.stack); i <= index; i++ {
+		v.stack = append(v.stack, Value{})
+	}
+
+	v.stack[index] = value
+}
+
+func (v *VM) getTable(index byte) (*Table, error) {
+	tableValue := v.stack[index]
+	if tableValue.valueType != TypeTable {
+		return nil, fmt.Errorf("expected stack value at %v to be a Table but it is of type %v", index, tableValue.valueType)
+	}
+
+	return tableValue.inner.(*Table), nil
+}
+
+func Print(vm *VM) int {
+	stackItem := vm.stack[vm.funcIndex+1]
+	fmt.Printf("%v\n", stackItem)
+	return 0
+}
 
 type OpCode byte
 
@@ -23,12 +318,15 @@ const (
 	OpCodeMove
 	OpCodeNewTable
 	OpCodeSetTable
-	OpCdoeSetTableConst
+	OpCodeSetTableConst
 	OpCodeSetField
 	OpCodeSetFieldConst
 	OpCodeSetInt
 	OpCodeSetIntConst
 	OpCodeSetList
+	OpCodeGetTable
+	OpCodeGetField
+	OpCodeGetInt
 )
 
 type ByteCode struct {
@@ -96,7 +394,7 @@ func SetTable(tableStackIndex, keyStackIndex, valueStackIndex byte) ByteCode {
 }
 
 func SetTableConst(tableStackIndex, keyStackIndex, valueConstIndex byte) ByteCode {
-	return ByteCode{OpCdoeSetTableConst, [3]byte{tableStackIndex, keyStackIndex, valueConstIndex}}
+	return ByteCode{OpCodeSetTableConst, [3]byte{tableStackIndex, keyStackIndex, valueConstIndex}}
 }
 
 func SetField(tableStackIndex, keyConstIndex, valueStackIndex byte) ByteCode {
@@ -117,6 +415,18 @@ func SetFieldConst(tableStackIndex, keyConstIndex, valueConstIndex byte) ByteCod
 
 func SetList(tableStackIndex, length byte) ByteCode {
 	return ByteCode{OpCodeSetList, [3]byte{tableStackIndex, length}}
+}
+
+func GetTable(stackIndex, tableStackIndex, keyConstIndex byte) ByteCode {
+	return ByteCode{OpCodeGetTable, [3]byte{stackIndex, tableStackIndex, keyConstIndex}}
+}
+
+func GetField(stackIndex, tableStackIndex, keyStackIndex byte) ByteCode {
+	return ByteCode{OpCodeGetField, [3]byte{stackIndex, tableStackIndex, keyStackIndex}}
+}
+
+func GetInt(stackIndex, tableStackIndex, integer byte) ByteCode {
+	return ByteCode{OpCodeGetInt, [3]byte{stackIndex, tableStackIndex, integer}}
 }
 
 type Value struct {
@@ -171,190 +481,11 @@ func NewBoolean(value bool) Value {
 	return Value{TypeBoolean, value}
 }
 
-func NewTable(value Table) Value {
+func NewTable(value *Table) Value {
 	return Value{TypeTable, value}
 }
 
 type Table struct {
 	List  []Value
 	Inner map[Value]Value
-}
-
-type VM struct {
-	globals   map[string]Value
-	stack     []Value
-	funcIndex int
-}
-
-func NewVM(globals map[string]Value) *VM {
-	return &VM{globals: globals}
-}
-
-func (v *VM) Execute(constants []Value, byteCodes []ByteCode) error {
-	for _, byteCode := range byteCodes {
-		switch byteCode.opCode {
-		case OpCodeCall:
-			stackIndex := byteCode.args[0]
-			v.funcIndex = int(stackIndex)
-
-			stackItem := v.stack[stackIndex]
-			if stackItem.valueType != TypeFunction {
-				return fmt.Errorf("expected %v. stack item to be a function but it is of type %v", stackIndex, stackItem.valueType)
-			}
-
-			function := stackItem.inner.(vmFunc)
-			_ = function(v)
-
-		case OpCodeGetGlobal:
-			globalIndex := byteCode.args[1]
-			constant := constants[globalIndex]
-			if constant.valueType != TypeString {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
-			}
-
-			globalName := constant.inner.(string)
-
-			global, ok := v.globals[globalName]
-			if !ok {
-				global = NewNil()
-			}
-
-			stackIndex := byteCode.args[0]
-
-			v.setStack(int(stackIndex), global)
-
-		case OpCodeSetGlobal:
-			globalIndex := byteCode.args[0]
-			constant := constants[globalIndex]
-			if constant.valueType != TypeString {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
-			}
-
-			stackIndex := byteCode.args[1]
-			v.globals[constant.String()] = v.stack[stackIndex]
-
-		case OpCodeSetGlobalGlobal:
-			globalIndex := byteCode.args[0]
-			constant := constants[globalIndex]
-			if constant.valueType != TypeString {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
-			}
-
-			rhGlobalIndex := byteCode.args[1]
-			rhConstant := constants[rhGlobalIndex]
-			if rhConstant.valueType != TypeString {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, rhConstant.valueType)
-			}
-			rhGlobal, ok := v.globals[rhConstant.String()]
-			if !ok {
-				rhGlobal = NewNil()
-			}
-			v.globals[constant.String()] = rhGlobal
-
-		case OpCodeSetGlobalConst:
-			globalIndex := byteCode.args[0]
-			constant := constants[globalIndex]
-			if constant.valueType != TypeString {
-				return fmt.Errorf("expected %v constant to be a global but constant is of type %v", globalIndex, constant.valueType)
-			}
-
-			constIndex := byteCode.args[1]
-			v.globals[constant.String()] = constants[constIndex]
-
-		case OpCodeLoadConst:
-			stackIndex := byteCode.args[0]
-			constIndex := byteCode.args[1]
-
-			v.setStack(int(stackIndex), constants[constIndex])
-
-		case OpCodeLoadNil:
-			stackIndex := byteCode.args[0]
-			v.setStack(int(stackIndex), NewNil())
-
-		case OpCodeLoadBool:
-			stackIndex := byteCode.args[0]
-			isTrue := byteCode.args[1] == 1
-			v.setStack(int(stackIndex), NewBoolean(isTrue))
-
-		case OpCodeLoadInt:
-			stackIndex := byteCode.args[0]
-
-			integer := binary.BigEndian.Uint16(byteCode.args[1:])
-
-			v.setStack(int(stackIndex), NewInteger(int64(integer)))
-
-		case OpCodeMove:
-			destinationIndex := byteCode.args[0]
-			sourceIndex := byteCode.args[1]
-			v.setStack(int(destinationIndex), v.stack[sourceIndex])
-
-		case OpCodeNewTable:
-			stackIndex := byteCode.args[0]
-			listSize := byteCode.args[1]
-			tableSize := byteCode.args[2]
-			v.setStack(int(stackIndex), NewTable(Table{make([]Value, 0, listSize), make(map[Value]Value, tableSize)}))
-
-		case OpCodeSetTable:
-			tableStackIndex := byteCode.args[0]
-			keyStackIndex := byteCode.args[1]
-			valueStackIndex := byteCode.args[2]
-
-			tableValue := v.stack[tableStackIndex]
-			if tableValue.valueType != TypeTable {
-				return fmt.Errorf("expected stack value to be a table but it is of type %v", tableValue.valueType)
-			}
-			key := v.stack[keyStackIndex]
-			value := v.stack[valueStackIndex]
-			table := tableValue.inner.(Table)
-			table.Inner[key] = value
-
-		case OpCodeSetField:
-			tableStackIndex := byteCode.args[0]
-			keyConstIndex := byteCode.args[1]
-			valueStackIndex := byteCode.args[2]
-
-			tableValue := v.stack[tableStackIndex]
-			if tableValue.valueType != TypeTable {
-				return fmt.Errorf("expected stack value to be a table but it is of type %v", tableValue.valueType)
-			}
-			key := constants[keyConstIndex]
-			value := v.stack[valueStackIndex]
-			table := tableValue.inner.(Table)
-			table.Inner[key] = value
-
-		case OpCodeSetList:
-			tableStackIndex := byteCode.args[0]
-			listSize := byteCode.args[1]
-
-			tableValue := v.stack[tableStackIndex]
-			if tableValue.valueType != TypeTable {
-				return fmt.Errorf("expected %v stack value to be a table but it is of type %v", tableStackIndex, tableValue.valueType)
-			}
-			table := tableValue.inner.(Table)
-
-			for i := tableStackIndex + 1; i < tableStackIndex+1+listSize; i++ {
-				table.List = append(table.List, v.stack[i])
-				v.stack[i] = Value{}
-			}
-
-		default:
-			return fmt.Errorf("unexpected vm.OpCode: %v", byteCode.opCode)
-		}
-	}
-
-	return nil
-}
-
-func (v *VM) setStack(index int, value Value) {
-	for i := len(v.stack); i <= index; i++ {
-		v.stack = append(v.stack, Value{})
-	}
-
-	v.stack[index] = value
-}
-
-func Print(vm *VM) int {
-	stackItem := vm.stack[vm.funcIndex+1]
-	fmt.Printf("%v\n", stackItem)
-	return 0
 }

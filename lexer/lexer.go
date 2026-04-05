@@ -82,7 +82,6 @@ const (
 	Identifier
 )
 
-
 func FromString(value string) (TokenType, error) {
 	switch value {
 	case "and":
@@ -207,19 +206,15 @@ type Error struct {
 	cursor Cursor
 }
 
-func NewError(inner error, cursor Cursor) *Error {
-	return &Error{inner, cursor}
-}
-
-func (l *Error) Error() string {
-	if l == nil{
+func (e *Error) Error() string {
+	if e == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("%+v %v", l.cursor, l.inner)
+	return fmt.Sprintf("%v %+v", e.inner, e.cursor)
 }
 
 func (e *Error) Unwrap() error {
-	if(e == nil){
+	if e == nil {
 		return nil
 	}
 	return e.inner
@@ -235,7 +230,7 @@ type reader struct {
 }
 
 func NewDiagnosticReader(input string) *reader {
-	return &reader{strings.NewReader(input), Cursor{1, 1}}
+	return &reader{strings.NewReader(input), Cursor{1, 0}}
 }
 
 func (d *reader) TakeRune() (rune, bool) {
@@ -247,7 +242,7 @@ func (d *reader) TakeRune() (rune, bool) {
 	d.Cursor.col++
 	if next == '\n' {
 		d.Cursor.line++
-		d.Cursor.col = 1
+		d.Cursor.col = 0
 	}
 
 	return next, true
@@ -264,7 +259,11 @@ func (r *reader) PeekRune() (rune, bool) {
 }
 
 func (r *reader) SkipRunes(n int64) {
-	r.inner.Seek(n, io.SeekCurrent)
+	for range n {
+		if _, ok := r.TakeRune(); !ok {
+			return
+		}
+	}
 }
 
 func (r *reader) Size() int64 {
@@ -323,7 +322,7 @@ func (l *Lexer) Peek() (Token, error) {
 	}
 
 	token, err := l.next()
-	if err != nil{
+	if err != nil {
 		return Token{}, err
 	}
 	l.peeked = &token
@@ -334,7 +333,7 @@ func (l *Lexer) Peek() (Token, error) {
 func (l *Lexer) next() (Token, error) {
 	r, ok := l.skipWithespace()
 	if !ok {
-		return Token{}, NewError(io.EOF, l.Cursor())
+		return Token{}, l.newError(io.EOF)
 	}
 
 	defer l.buffer.Reset()
@@ -443,7 +442,7 @@ func (l *Lexer) next() (Token, error) {
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		token, err := l.readNumber()
 		if err != nil {
-			return Token{}, NewError(fmt.Errorf("reading number: %w", err), l.Cursor())
+			return Token{}, l.newError(fmt.Errorf("reading number: %w", err))
 		}
 
 		return token, nil
@@ -465,12 +464,11 @@ func (l *Lexer) ExpectToken(want TokenType) (Token, error) {
 	}
 
 	if token.Type != want {
-		return Token{}, NewError(fmt.Errorf("want %v got %v", want, token.Type), l.Cursor())
+		return Token{}, l.newError(fmt.Errorf("want %v got %v", want, token.Type))
 	}
 
 	return token, nil
 }
-
 
 func (l *Lexer) skipWithespace() (rune, bool) {
 	var (
@@ -576,7 +574,6 @@ func (l *Lexer) readWhile(matchFn func(rune) bool) {
 	}
 }
 
-
 func (l *Lexer) readString() (string, error) {
 	delimiter, ok := l.lastRune()
 	if !ok {
@@ -588,7 +585,7 @@ func (l *Lexer) readString() (string, error) {
 	})
 
 	if closingDelimiter, ok := l.input.PeekRune(); !ok || closingDelimiter != delimiter {
-		return "", NewError(errors.New("cut off string"), l.Cursor())
+		return "", l.newError(errors.New("cut off string"))
 	}
 	l.input.SkipRunes(1)
 
@@ -682,7 +679,7 @@ func (l *Lexer) readNumber() (Token, error) {
 	if isFloat {
 		number, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return Token{}, NewError(fmt.Errorf("parsing float64 from %v: %w", raw, err), l.Cursor())
+			return Token{}, l.newError(fmt.Errorf("parsing float64 from %v: %w", raw, err))
 		}
 
 		return Token{Type: Float, Float: number}, nil
@@ -690,9 +687,13 @@ func (l *Lexer) readNumber() (Token, error) {
 
 	number, err := strconv.ParseInt(raw, 10, 64) //TODO different base?
 	if err != nil {
-		return Token{}, NewError(fmt.Errorf("parsing int64 from %v: %w", raw, err), l.Cursor())
+		return Token{}, l.newError(fmt.Errorf("parsing int64 from %v: %w", raw, err))
 	}
 
 	return Token{Type: Integer, Integer: number}, nil
 
+}
+
+func (l *Lexer) newError(inner error) *Error {
+	return &Error{inner, l.Cursor()}
 }
