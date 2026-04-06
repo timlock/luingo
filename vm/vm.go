@@ -18,11 +18,11 @@ type VM struct {
 	stack     []Value
 	funcIndex int
 
-	stdOut io.Writer
+	out io.Writer
 }
 
 func NewVM(globals map[string]Value, stdOut io.Writer) *VM {
-	return &VM{globals: globals, stdOut: stdOut}
+	return &VM{globals: globals, out: stdOut}
 }
 
 func (v *VM) Execute(ctx context.Context, constants []Value, byteCodes []ByteCode) error {
@@ -307,7 +307,7 @@ type stack struct {
 
 func Print(vm *VM) int {
 	stackItem := vm.stack[vm.funcIndex+1]
-	fmt.Fprintf(vm.stdOut, "%v\n", stackItem)
+	fmt.Fprintf(vm.out, "%v\n", stackItem)
 	return 0
 }
 

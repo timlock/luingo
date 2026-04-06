@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,11 +59,26 @@ func Test(t *testing.T) {
 
 			var output strings.Builder
 
-			interpreter := NewInterpreter(string(input), &output, Globals)
+			interpreter := NewInterpreter(string(input), Options{
+				Globals,
+				&output,
+			})
 
 			logger := slog.New(slog.NewTextHandler(
 				os.Stderr,
-				&slog.HandlerOptions{Level: slog.LevelDebug},
+				&slog.HandlerOptions{
+					Level: slog.LevelDebug,
+					ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+						if a.Key == slog.TimeKey {
+							return slog.Attr{
+								Key:   a.Key,
+								Value: slog.StringValue(a.Value.Time().Format(time.TimeOnly)),
+							}
+						}
+
+						return a
+					},
+				},
 			))
 			ctx := logging.WithLogger(context.Background(), logger)
 
