@@ -3,12 +3,13 @@ package interpreter
 import (
 	"context"
 	"fmt"
+	"io"
 	"luingo/logging"
 	"luingo/parser"
 	"luingo/vm"
 )
 
-var globals = map[string]vm.Value{
+var Globals = map[string]vm.Value{
 	"print": vm.NewFuntion(vm.Print),
 }
 
@@ -17,10 +18,13 @@ type Interpreter struct {
 	vm     *vm.VM
 }
 
-func NewInterpreter(code string) Interpreter {
+func NewInterpreter(code string, stdOut io.Writer, globals map[string]vm.Value) Interpreter {
+	if globals == nil {
+		globals = Globals
+	}
 	return Interpreter{
 		parser.NewParser(code),
-		vm.NewVM(globals),
+		vm.NewVM(globals, stdOut),
 	}
 }
 
@@ -31,11 +35,8 @@ func (i Interpreter) Execute(ctx context.Context) error {
 		return fmt.Errorf("parsing content: %w", err)
 	}
 
-	for _, constant := range constants {
-		logger.Debug(fmt.Sprintf("constant: %+v", constant))
-	}
-	for _, byteCode := range byteCodes {
-		logger.Debug(fmt.Sprintf("byte code: %v", byteCode))
+	for constantIndex, constant := range constants {
+		logger.Debug(fmt.Sprintf("constant: %v=%+v", constantIndex, constant))
 	}
 
 	err = i.vm.Execute(ctx, constants, byteCodes)

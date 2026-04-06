@@ -68,7 +68,7 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 				return nil, nil, fmt.Errorf("parsing prefixexp: %w", err)
 			}
 			if prefixExp.expressionType != expressionCall {
-				p.assignment(token.Str)
+				p.assignment(prefixExp)
 			}
 
 		case lexer.Local:
@@ -88,8 +88,8 @@ func (p *Parser) Parse() ([]vm.Value, []vm.ByteCode, error) {
 	return constants, byteCodes, nil
 }
 
-func (p *Parser) assignment(identifier string) error {
-	varList := []expression{newStringExpression(identifier)}
+func (p *Parser) assignment(firstVariable expression) error {
+	varList := []expression{firstVariable}
 loop:
 	for {
 		token, err := p.lexer.Next()
@@ -207,22 +207,22 @@ func (p *Parser) assignVariable(variable, value expression) error {
 func (p *Parser) assignVariableLocal(variable expression, stackIndex byte) error {
 	switch variable.expressionType {
 	case expressionLocal:
-		p.byteCodes = append(p.byteCodes, vm.Move(stackIndex, stackIndex))
+		p.byteCodes = append(p.byteCodes, vm.Move(variable.inner.(byte), stackIndex))
 
 	case expressionGlobal:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobal(stackIndex, stackIndex))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobal(variable.inner.(byte), stackIndex))
 
 	case expressionIndex:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetTable(stackIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetTable(pair[0], pair[1], stackIndex))
 
 	case expressionIndexField:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetField(stackIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetField(pair[0], pair[1], stackIndex))
 
 	case expressionIndexInt:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetInt(stackIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetInt(pair[0], pair[1], stackIndex))
 
 	default:
 		return fmt.Errorf("did not expect expression '%v' in assignment to local variable", variable.expressionType)
@@ -234,19 +234,19 @@ func (p *Parser) assignVariableLocal(variable expression, stackIndex byte) error
 func (p *Parser) assignVariableConst(variable expression, constIndex byte) error {
 	switch variable.expressionType {
 	case expressionGlobal:
-		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(constIndex, constIndex))
+		p.byteCodes = append(p.byteCodes, vm.SetGlobalConst(variable.inner.(byte), constIndex))
 
 	case expressionIndex:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetTableConst(constIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetTableConst(pair[0], pair[1], constIndex))
 
 	case expressionIndexField:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetFieldConst(constIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetFieldConst(pair[0], pair[1], constIndex))
 
 	case expressionIndexInt:
 		pair := variable.inner.([2]byte)
-		p.byteCodes = append(p.byteCodes, vm.SetIntConst(constIndex, pair[0], pair[1]))
+		p.byteCodes = append(p.byteCodes, vm.SetIntConst(pair[0], pair[1], constIndex))
 
 	default:
 		return fmt.Errorf("did not expect expression '%v' in assignment to const variable", variable.expressionType)
@@ -535,16 +535,16 @@ func (p *Parser) loadExpression(destination byte, expression expression) {
 	case expressionIndex:
 		pair := expression.inner.([2]byte)
 		tableStackIndex := pair[0]
-		keyConstIndex := pair[1]
+		keyStackIndex := pair[1]
 
-		p.byteCodes = append(p.byteCodes, vm.GetTable(destination, tableStackIndex, keyConstIndex))
+		p.byteCodes = append(p.byteCodes, vm.GetTable(destination, tableStackIndex, keyStackIndex))
 
 	case expressionIndexField:
 		pair := expression.inner.([2]byte)
 		tableStackIndex := pair[0]
-		keyStackIndex := pair[1]
+		keyConstIndex := pair[1]
 
-		p.byteCodes = append(p.byteCodes, vm.GetField(destination, tableStackIndex, keyStackIndex))
+		p.byteCodes = append(p.byteCodes, vm.GetField(destination, tableStackIndex, keyConstIndex))
 
 	case expressionIndexInt:
 		pair := expression.inner.([2]byte)
@@ -905,12 +905,12 @@ func newGlobalExpression(value byte) expression {
 	return expression{expressionGlobal, value}
 }
 
-func newIndexExpression(tableStackIndex, constIndex byte) expression {
-	return expression{expressionIndex, [2]byte{tableStackIndex, constIndex}}
+func newIndexExpression(tableStackIndex, keyIndex byte) expression {
+	return expression{expressionIndex, [2]byte{tableStackIndex, keyIndex}}
 }
 
-func newIndexFieldExpression(tableStackIndex, stackIndex byte) expression {
-	return expression{expressionIndexField, [2]byte{tableStackIndex, stackIndex}}
+func newIndexFieldExpression(tableStackIndex, keyConstIndex byte) expression {
+	return expression{expressionIndexField, [2]byte{tableStackIndex, keyConstIndex}}
 }
 
 func newIndexIntExpression(tableStackIndex, integer byte) expression {

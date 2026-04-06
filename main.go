@@ -21,7 +21,7 @@ func main() {
 		return
 	}
 
-	interpreter := interpreter.NewInterpreter(string(bytes))
+	interpreter := interpreter.NewInterpreter(string(bytes), os.Stdout, interpreter.Globals)
 	logger := slog.New(slog.NewTextHandler(
 		os.Stderr,
 		&slog.HandlerOptions{Level: slog.LevelInfo},

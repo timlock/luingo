@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"luingo/logging"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -14,10 +17,12 @@ type VM struct {
 	globals   map[string]Value
 	stack     []Value
 	funcIndex int
+
+	stdOut io.Writer
 }
 
-func NewVM(globals map[string]Value) *VM {
-	return &VM{globals: globals}
+func NewVM(globals map[string]Value, stdOut io.Writer) *VM {
+	return &VM{globals: globals, stdOut: stdOut}
 }
 
 func (v *VM) Execute(ctx context.Context, constants []Value, byteCodes []ByteCode) error {
@@ -25,17 +30,17 @@ func (v *VM) Execute(ctx context.Context, constants []Value, byteCodes []ByteCod
 
 	for byteCodeIndex, byteCode := range byteCodes {
 
-		logger.Debug(fmt.Sprintf("Step %v %+v", byteCodeIndex, byteCode))
+		var stringBuilder strings.Builder
 		if err := v.step(byteCode, constants); err != nil {
 			return fmt.Errorf("executing %+v: %w", byteCode, err)
 		}
 
-		logger.Debug("Stack: ")
-		var stringBuilder strings.Builder
+		stringBuilder.WriteString("Stack: ")
 		for stackIndex, value := range v.stack {
 			fmt.Fprintf(&stringBuilder, "%v=[%v] ", stackIndex, value)
 		}
-		logger.Debug(stringBuilder.String())
+
+		logger.Debug(fmt.Sprintf("Step %v. %+v %v", byteCodeIndex, byteCode, stringBuilder.String()))
 	}
 
 	return nil
@@ -155,7 +160,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		key := v.stack[keyStackIndex]
 		value := v.stack[valueStackIndex]
-		table.Inner[key] = value
+		table.Put(key, value)
 
 	case OpCodeSetTableConst:
 		tableStackIndex := byteCode.args[0]
@@ -168,7 +173,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		key := v.stack[keyStackIndex]
 		value := constants[valueConstIndex]
-		table.Inner[key] = value
+		table.Put(key, value)
 
 	case OpCodeSetField:
 		tableStackIndex := byteCode.args[0]
@@ -181,7 +186,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		key := constants[keyConstIndex]
 		value := v.stack[valueStackIndex]
-		table.Inner[key] = value
+		table.Put(key, value)
 
 	case OpCodeSetFieldConst:
 		tableStackIndex := byteCode.args[0]
@@ -194,7 +199,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		key := constants[keyConstIndex]
 		value := constants[valueConstIndex]
-		table.Inner[key] = value
+		table.Put(key, value)
 
 	case OpCodeSetInt:
 		tableStackIndex := byteCode.args[0]
@@ -206,7 +211,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 			return err
 		}
 		value := v.stack[valueStackIndex]
-		table.List[listIndex] = value
+		table.Set(int64(listIndex), value)
 
 	case OpCodeSetIntConst:
 		tableStackIndex := byteCode.args[0]
@@ -218,7 +223,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 			return err
 		}
 		value := constants[valueConstIndex]
-		table.List[listIndex] = value
+		table.Set(int64(listIndex), value)
 
 	case OpCodeSetList:
 		tableStackIndex := byteCode.args[0]
@@ -230,11 +235,11 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 
 		for i := tableStackIndex + 1; i < tableStackIndex+1+listSize; i++ {
-			table.List = append(table.List, v.stack[i])
+			table.Add(v.stack[i])
 			v.stack[i] = Value{}
 		}
 
-	case OpCodeGetField:
+	case OpCodeGetTable:
 		destination := byteCode.args[0]
 		tableStackIndex := byteCode.args[1]
 		keyStackIndex := byteCode.args[2]
@@ -245,7 +250,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		keyValue := v.stack[keyStackIndex]
 
-		v.setStack(int(destination), table.Inner[keyValue])
+		v.setStack(int(destination), table.Get(keyValue))
 
 	case OpCodeGetInt:
 		destination := byteCode.args[0]
@@ -257,9 +262,9 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 			return err
 		}
 
-		v.setStack(int(destination), table.List[listIndex])
+		v.setStack(int(destination), table.At(int64(listIndex)))
 
-	case OpCodeGetTable:
+	case OpCodeGetField:
 		destination := byteCode.args[0]
 		tableStackIndex := byteCode.args[1]
 		keyConstIndex := byteCode.args[2]
@@ -270,7 +275,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 		}
 		keyValue := constants[keyConstIndex]
 
-		v.setStack(int(destination), table.Inner[keyValue])
+		v.setStack(int(destination), table.Get(keyValue))
 
 	default:
 		panic(fmt.Sprintf("unexpected vm.OpCode: %#v", byteCode.opCode))
@@ -296,9 +301,13 @@ func (v *VM) getTable(index byte) (*Table, error) {
 	return tableValue.inner.(*Table), nil
 }
 
+type stack struct {
+	inner []Value
+}
+
 func Print(vm *VM) int {
 	stackItem := vm.stack[vm.funcIndex+1]
-	fmt.Printf("%v\n", stackItem)
+	fmt.Fprintf(vm.stdOut, "%v\n", stackItem)
 	return 0
 }
 
@@ -417,12 +426,12 @@ func SetList(tableStackIndex, length byte) ByteCode {
 	return ByteCode{OpCodeSetList, [3]byte{tableStackIndex, length}}
 }
 
-func GetTable(stackIndex, tableStackIndex, keyConstIndex byte) ByteCode {
-	return ByteCode{OpCodeGetTable, [3]byte{stackIndex, tableStackIndex, keyConstIndex}}
+func GetTable(stackIndex, tableStackIndex, keyStackIndex byte) ByteCode {
+	return ByteCode{OpCodeGetTable, [3]byte{stackIndex, tableStackIndex, keyStackIndex}}
 }
 
-func GetField(stackIndex, tableStackIndex, keyStackIndex byte) ByteCode {
-	return ByteCode{OpCodeGetField, [3]byte{stackIndex, tableStackIndex, keyStackIndex}}
+func GetField(stackIndex, tableStackIndex, keyConstIndex byte) ByteCode {
+	return ByteCode{OpCodeGetField, [3]byte{stackIndex, tableStackIndex, keyConstIndex}}
 }
 
 func GetInt(stackIndex, tableStackIndex, integer byte) ByteCode {
@@ -486,6 +495,84 @@ func NewTable(value *Table) Value {
 }
 
 type Table struct {
-	List  []Value
-	Inner map[Value]Value
+	array   []Value
+	hashMap map[Value]Value
+}
+
+func (t *Table) String() string {
+	var stringBuilder strings.Builder
+
+	stringBuilder.WriteString("Table{")
+
+	for i, value := range t.array {
+		fmt.Fprintf(&stringBuilder, "%v=%v", i, value)
+		if i < len(t.array)-1 {
+			stringBuilder.WriteRune(',')
+		}
+	}
+
+	if len(t.array) > 0 && len(t.hashMap) > 0 {
+		stringBuilder.WriteRune(',')
+	}
+
+	sortedKeys := slices.SortedFunc(maps.Keys(t.hashMap), func(a, b Value) int {
+		return strings.Compare(a.String(), b.String())
+	})
+	for _, key := range sortedKeys {
+		fmt.Fprintf(&stringBuilder, "%v=%v", key, t.hashMap[key])
+		stringBuilder.WriteRune(',')
+	}
+
+	str := stringBuilder.String()
+	str = strings.TrimSuffix(str, ",")
+	str += "}"
+
+	return str
+}
+
+func (t *Table) Get(key Value) Value {
+	if key.inner == TypeInteger {
+		index := key.inner.(int64)
+		return t.At(index)
+	}
+
+	value, ok := t.hashMap[key]
+	if !ok {
+		return NewNil()
+	}
+
+	return value
+}
+
+func (t *Table) At(index int64) Value {
+	if int64(len(t.array)) <= index {
+		return NewNil()
+	}
+
+	return t.array[index]
+}
+
+func (t *Table) Put(key, value Value) {
+	if key.inner == TypeInteger {
+		index := key.inner.(int64)
+		t.Set(index, value)
+		return
+	}
+
+	t.hashMap[key] = value
+}
+
+func (t *Table) Set(index int64, value Value) {
+	for index > int64(len(t.array)) {
+		t.array = append(t.array, NewNil())
+	}
+
+	t.array = append(t.array, value)
+}
+
+func (t *Table) Add(value Value) {
+	if len(t.array) == 0 {
+		t.array = append(t.array, NewNil())
+	}
+	t.array = append(t.array, value)
 }

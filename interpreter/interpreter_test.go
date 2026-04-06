@@ -6,6 +6,7 @@ import (
 	"luingo/logging"
 	"os"
 	"path"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,34 +15,40 @@ import (
 
 func Test(t *testing.T) {
 	testCases := []struct {
-		desc     string
-		filePath string
-		wantErr  assert.ErrorAssertionFunc
+		desc       string
+		filePath   string
+		wantOutput []string
+		wantErr    assert.ErrorAssertionFunc
 	}{
 		{
-			desc:     "print.lua",
-			filePath: path.Join("testdata", "print.lua"),
-			wantErr:  assert.NoError,
+			desc:       "print.lua",
+			filePath:   path.Join("testdata", "print.lua"),
+			wantOutput: []string{"hello, world!", "<nil>", "false", "123", "123456", "123456"},
+			wantErr:    assert.NoError,
 		},
 		{
-			desc:     "locals.lua",
-			filePath: path.Join("testdata", "locals.lua"),
-			wantErr:  assert.NoError,
+			desc:       "locals.lua",
+			filePath:   path.Join("testdata", "locals.lua"),
+			wantOutput: []string{"hello, local!", "function", "I'm local-print!"},
+			wantErr:    assert.NoError,
 		},
 		{
-			desc:     "assign.lua",
-			filePath: path.Join("testdata", "assign.lua"),
-			wantErr:  assert.NoError,
+			desc:       "assign.lua",
+			filePath:   path.Join("testdata", "assign.lua"),
+			wantOutput: []string{"123", "123", "<nil>", "123", "<nil>", "<nil>"},
+			wantErr:    assert.NoError,
 		},
 		{
-			desc:     "table.lua",
-			filePath: path.Join("testdata", "table.lua"),
-			wantErr:  assert.NoError,
+			desc:       "table.lua",
+			filePath:   path.Join("testdata", "table.lua"),
+			wantOutput: []string{"100", "hello", "vvv", "Table{0=<nil>,1=100,2=200,3=300,kkk=vvv,x=hello,y=world}"},
+			wantErr:    assert.NoError,
 		},
 		{
-			desc:     "prefixexp.lua",
-			filePath: path.Join("testdata", "prefixexp.lua"),
-			wantErr:  assert.NoError,
+			desc:       "prefixexp.lua",
+			filePath:   path.Join("testdata", "prefixexp.lua"),
+			wantOutput: []string{"400", "100", "20", "<nil>"},
+			wantErr:    assert.NoError,
 		},
 	}
 	for _, tC := range testCases {
@@ -49,16 +56,22 @@ func Test(t *testing.T) {
 			input, err := os.ReadFile(tC.filePath)
 			require.NoError(t, err)
 
-			interpreter := NewInterpreter(string(input))
+			var output strings.Builder
+
+			interpreter := NewInterpreter(string(input), &output, Globals)
 
 			logger := slog.New(slog.NewTextHandler(
 				os.Stderr,
-				&slog.HandlerOptions{Level: slog.LevelInfo},
+				&slog.HandlerOptions{Level: slog.LevelDebug},
 			))
 			ctx := logging.WithLogger(context.Background(), logger)
-			
+
 			err = interpreter.Execute(ctx)
 			tC.wantErr(t, err)
+
+			gotOutput := strings.Split(output.String(), "\n")
+			gotOutput = gotOutput[:len(gotOutput)-1] // last element is empty
+			assert.Equal(t, tC.wantOutput, gotOutput)
 		})
 	}
 }
