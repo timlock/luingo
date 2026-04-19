@@ -29,11 +29,15 @@ func _() {
 	_ = x[OpCodeGetTable-18]
 	_ = x[OpCodeGetField-19]
 	_ = x[OpCodeGetInt-20]
+	_ = x[OpCodeNegate-21]
+	_ = x[OpCodeNot-22]
+	_ = x[OpCodeBitNot-23]
+	_ = x[OpCodeLength-24]
 }
 
-const _OpCode_name = "GetGlobalSetGlobalSetGlobalConstSetGlobalGlobalLoadConstCallLoadNilLoadBoolLoadIntMoveNewTableSetTableSetTableConstSetFieldSetFieldConstSetIntSetIntConstSetListGetTableGetFieldGetInt"
+const _OpCode_name = "GetGlobalSetGlobalSetGlobalConstSetGlobalGlobalLoadConstCallLoadNilLoadBoolLoadIntMoveNewTableSetTableSetTableConstSetFieldSetFieldConstSetIntSetIntConstSetListGetTableGetFieldGetIntNegateNotBitNotLength"
 
-var _OpCode_index = [...]uint8{0, 9, 18, 32, 47, 56, 60, 67, 75, 82, 86, 94, 102, 115, 123, 136, 142, 153, 160, 168, 176, 182}
+var _OpCode_index = [...]uint8{0, 9, 18, 32, 47, 56, 60, 67, 75, 82, 86, 94, 102, 115, 123, 136, 142, 153, 160, 168, 176, 182, 188, 191, 197, 203}
 
 func (i OpCode) String() string {
 	idx := int(i) - 0

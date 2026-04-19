@@ -553,8 +553,15 @@ func (p *Parser) loadExpression(destination byte, expression expression) {
 
 		p.byteCodes = append(p.byteCodes, vm.GetInt(destination, tableStackIndex, integer))
 
+	case expressionUnaryOperation:
+		pair := expression.inner.([2]any)
+		constructor := pair[0].(func(a, b byte) vm.ByteCode)
+		sourceStackIndex := pair[1].(byte)
+
+		p.byteCodes = append(p.byteCodes, constructor(destination, sourceStackIndex))
+
 	default:
-		panic(fmt.Sprintf("unexpected parser.expressionType: %#v", expression.expressionType))
+		panic(fmt.Sprintf("unexpected parser.expressionType: %v", expression.expressionType))
 	}
 
 	p.stackPointer = destination + 1
@@ -589,6 +596,34 @@ func (p *Parser) expression(token lexer.Token) (expression, error) {
 		}
 		return tableExpr, nil
 
+	case lexer.Minus:
+		negateExpression, err := p.negate()
+		if err != nil {
+			return expression{}, fmt.Errorf("reading negate expression: %w", err)
+		}
+		return negateExpression, nil
+
+	case lexer.Not:
+		notExpression, err := p.not()
+		if err != nil {
+			return expression{}, fmt.Errorf("reading not expression: %w", err)
+		}
+		return notExpression, nil
+
+	case lexer.Tilde:
+		bitNotExpression, err := p.bitNot()
+		if err != nil {
+			return expression{}, fmt.Errorf("reading bit not expression: %w", err)
+		}
+		return bitNotExpression, nil
+
+	case lexer.Hashtag:
+		lengthExpression, err := p.length()
+		if err != nil {
+			return expression{}, fmt.Errorf("reading length expression: %w", err)
+		}
+		return lengthExpression, nil
+
 	default:
 		prefixExpression, err := p.prefixExp(token)
 		if err != nil {
@@ -596,6 +631,110 @@ func (p *Parser) expression(token lexer.Token) (expression, error) {
 		}
 
 		return prefixExpression, nil
+	}
+}
+
+func (p *Parser) negate() (expression, error) {
+	exp, err := p.readExpression()
+	if err != nil {
+		return expression{}, err
+	}
+
+	switch exp.expressionType {
+	case expressionNil:
+		fallthrough
+	case expressionString:
+		fallthrough
+	case expressioinBoolean:
+		return expression{}, fmt.Errorf("can not negate '%v' '%v'", exp.expressionType, exp.inner)
+	case expressionFloat:
+		return newFloatExpression(-exp.inner.(float64)), nil
+	case expressionInteger:
+		return newIntegerExpression(-exp.inner.(int64)), nil
+	default:
+		sourceStackIndex, err := p.loadExpTop(exp)
+		if err != nil {
+			return expression{}, err
+		}
+		return newUnaryOperationExpression(vm.Negate, sourceStackIndex), nil
+	}
+}
+
+func (p *Parser) not() (expression, error) {
+	exp, err := p.readExpression()
+	if err != nil {
+		return expression{}, err
+	}
+
+	switch exp.expressionType {
+	case expressioinBoolean:
+		return newBooleanExpression(!exp.inner.(bool)), nil
+	case expressionNil:
+		return newBooleanExpression(true), nil
+	case expressionString:
+		fallthrough
+	case expressionFloat:
+		fallthrough
+	case expressionInteger:
+		return newBooleanExpression(false), nil
+	default:
+		sourceStackIndex, err := p.loadExpTop(exp)
+		if err != nil {
+			return expression{}, err
+		}
+		return newUnaryOperationExpression(vm.Not, sourceStackIndex), nil
+	}
+}
+
+func (p *Parser) bitNot() (expression, error) {
+	exp, err := p.readExpression()
+	if err != nil {
+		return expression{}, err
+	}
+
+	switch exp.expressionType {
+	case expressionInteger:
+		return newIntegerExpression(^exp.inner.(int64)), nil
+	case expressionNil:
+		fallthrough
+	case expressioinBoolean:
+		fallthrough
+	case expressionFloat:
+		fallthrough
+	case expressionString:
+		return expression{}, fmt.Errorf("can not apply bitwise not to '%v' '%v'", exp.expressionType, exp.inner)
+	default:
+		sourceStackIndex, err := p.loadExpTop(exp)
+		if err != nil {
+			return expression{}, err
+		}
+		return newUnaryOperationExpression(vm.BitNot, sourceStackIndex), nil
+	}
+}
+
+func (p *Parser) length() (expression, error) {
+	exp, err := p.readExpression()
+	if err != nil {
+		return expression{}, err
+	}
+
+	switch exp.expressionType {
+	case expressionString:
+		return newIntegerExpression(int64(len(exp.inner.(string)))), nil
+	case expressionNil:
+		fallthrough
+	case expressioinBoolean:
+		fallthrough
+	case expressionFloat:
+		fallthrough
+	case expressionInteger:
+		return expression{}, fmt.Errorf("can get length for '%v' '%v'", exp.expressionType, exp.inner)
+	default:
+		sourceStackIndex, err := p.loadExpTop(exp)
+		if err != nil {
+			return expression{}, err
+		}
+		return newUnaryOperationExpression(vm.Length, sourceStackIndex), nil
 	}
 }
 
@@ -848,6 +987,7 @@ func (c *constantTable) addFloat(value float64) byte {
 	return pos
 }
 
+//go:generate go tool stringer -type=expressionType -trimprefix=expression
 type expressionType byte
 
 const (
@@ -862,6 +1002,7 @@ const (
 	expressionIndexField
 	expressionIndexInt
 	expressionCall
+	expressionUnaryOperation
 )
 
 type expression struct {
@@ -919,4 +1060,8 @@ func newIndexIntExpression(tableStackIndex, integer byte) expression {
 
 func newCallExpression() expression {
 	return expression{expressionCall, nil}
+}
+
+func newUnaryOperationExpression(byteCodeConstructor func(a, b byte) vm.ByteCode, sourceStackIndex byte) expression {
+	return expression{expressionUnaryOperation, [2]any{byteCodeConstructor, sourceStackIndex}}
 }

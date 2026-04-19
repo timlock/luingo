@@ -134,7 +134,7 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 	case OpCodeLoadInt:
 		stackIndex := byteCode.args[0]
 
-		integer := binary.BigEndian.Uint16(byteCode.args[1:])
+		integer := int16(binary.BigEndian.Uint16(byteCode.args[1:]))
 
 		v.setStack(int(stackIndex), NewInteger(int64(integer)))
 
@@ -277,6 +277,68 @@ func (v *VM) step(byteCode ByteCode, constants []Value) error {
 
 		v.setStack(int(destination), table.Get(keyValue))
 
+	case OpCodeNegate:
+		destinationStackIndex := byteCode.args[0]
+		sourceStackIndex := byteCode.args[1]
+
+		value := v.stack[sourceStackIndex]
+		switch value.valueType {
+		case TypeInteger:
+			value = NewInteger(-value.inner.(int64))
+		case TypeFloat:
+			value = NewFloat(-value.inner.(float64))
+		default:
+			return fmt.Errorf("Can not negate %v", value.valueType)
+		}
+
+		v.setStack(int(destinationStackIndex), value)
+
+	case OpCodeNot:
+		destinationStackIndex := byteCode.args[0]
+		sourceStackIndex := byteCode.args[1]
+
+		value := v.stack[sourceStackIndex]
+		switch value.valueType {
+		case TypeNil:
+			value = NewBoolean(true)
+		case TypeBoolean:
+			value = NewBoolean(!value.inner.(bool))
+		default:
+			value = NewBoolean(false)
+		}
+
+		v.setStack(int(destinationStackIndex), value)
+
+	case OpCodeBitNot:
+		destinationStackIndex := byteCode.args[0]
+		sourceStackIndex := byteCode.args[1]
+
+		value := v.stack[sourceStackIndex]
+		switch value.valueType {
+		case TypeInteger:
+			value = NewInteger(^value.inner.(int64))
+		default:
+			return fmt.Errorf("Can not apply bitwise not to %v", value.valueType)
+		}
+
+		v.setStack(int(destinationStackIndex), value)
+
+	case OpCodeLength:
+		destinationStackIndex := byteCode.args[0]
+		sourceStackIndex := byteCode.args[1]
+
+		value := v.stack[sourceStackIndex]
+		switch value.valueType {
+		case TypeString:
+			value = NewInteger(int64(len(value.inner.(string))))
+		case TypeTable:
+			value = NewInteger(int64(value.inner.(*Table).Length()))
+		default:
+			return fmt.Errorf("Can not get length for %v", value.valueType)
+		}
+
+		v.setStack(int(destinationStackIndex), value)
+
 	default:
 		panic(fmt.Sprintf("unexpected vm.OpCode: %#v", byteCode.opCode))
 	}
@@ -299,10 +361,6 @@ func (v *VM) getTable(index byte) (*Table, error) {
 	}
 
 	return tableValue.inner.(*Table), nil
-}
-
-type stack struct {
-	inner []Value
 }
 
 func Print(vm *VM) int {
@@ -336,6 +394,10 @@ const (
 	OpCodeGetTable
 	OpCodeGetField
 	OpCodeGetInt
+	OpCodeNegate
+	OpCodeNot
+	OpCodeBitNot
+	OpCodeLength
 )
 
 type ByteCode struct {
@@ -436,6 +498,22 @@ func GetField(stackIndex, tableStackIndex, keyConstIndex byte) ByteCode {
 
 func GetInt(stackIndex, tableStackIndex, integer byte) ByteCode {
 	return ByteCode{OpCodeGetInt, [3]byte{stackIndex, tableStackIndex, integer}}
+}
+
+func Negate(destinationStackIndex, sourceStackIndex byte) ByteCode {
+	return ByteCode{OpCodeNegate, [3]byte{destinationStackIndex, sourceStackIndex}}
+}
+
+func Not(destinationStackIndex, sourceStackIndex byte) ByteCode {
+	return ByteCode{OpCodeNot, [3]byte{destinationStackIndex, sourceStackIndex}}
+}
+
+func BitNot(destinationStackIndex, sourceStackIndex byte) ByteCode {
+	return ByteCode{OpCodeBitNot, [3]byte{destinationStackIndex, sourceStackIndex}}
+}
+
+func Length(destinationStackIndex, sourceStackIndex byte) ByteCode {
+	return ByteCode{OpCodeLength, [3]byte{destinationStackIndex, sourceStackIndex}}
 }
 
 type Value struct {
@@ -575,4 +653,8 @@ func (t *Table) Add(value Value) {
 		t.array = append(t.array, NewNil())
 	}
 	t.array = append(t.array, value)
+}
+
+func (t *Table) Length() int{
+	return len(t.array) + len(t.hashMap)
 }

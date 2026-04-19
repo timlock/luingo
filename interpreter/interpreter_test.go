@@ -51,6 +51,12 @@ func Test(t *testing.T) {
 			wantOutput: []string{"400", "100", "20", "<nil>"},
 			wantErr:    assert.NoError,
 		},
+		{
+			desc:     "unary_operations.lua",
+			filePath: path.Join("testdata", "unary_operations.lua"),
+			wantOutput: []string{"-101","-101","-3.14","-3.14","10","10","true","true","false","false"},
+			wantErr: assert.NoError,
+		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
